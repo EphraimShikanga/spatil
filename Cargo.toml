@@ -8,4 +8,11 @@ description = "A Wayland compositor for tiling and floating window management"
 repository = "https://github.com/EphraimShikanga/spatil"
 
 [dependencies]
-smithay = "0.7.0"
+smithay = { version = "0.7.0", default-features = false, features = ["wayland_frontend", "desktop"] }
+wgpu = "25"
+winit = "0.30"
+calloop = { version = "0.14", features = ["signals"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wayland-server = "0.31"
+pollster = "0.4.0"
