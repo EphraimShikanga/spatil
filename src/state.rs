@@ -1,3 +1,5 @@
+pub mod client;
+
 use crate::renderer::WgpuState;
 use smithay::reexports::calloop::LoopSignal;
 use smithay::reexports::wayland_server::DisplayHandle;

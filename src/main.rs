@@ -1,5 +1,4 @@
-mod client;
-mod compositor;
+mod handlers;
 mod renderer;
 mod state;
 
@@ -14,9 +13,9 @@ use smithay::reexports::calloop::{Interest, Mode, PostAction};
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
 use smithay::wayland::socket::ListeningSocketSource;
 
-use client::ClientState;
 use renderer::WgpuState;
 use state::SpatilState;
+use state::client::ClientState;
 
 struct SpatilApp {
     state: Option<SpatilState>,

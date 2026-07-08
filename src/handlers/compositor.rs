@@ -3,8 +3,8 @@ use smithay::reexports::wayland_server::Client;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
 
-use crate::client::ClientState;
 use crate::state::SpatilState;
+use crate::state::client::ClientState;
 
 impl CompositorHandler for SpatilState {
     fn compositor_state(&mut self) -> &mut CompositorState {
