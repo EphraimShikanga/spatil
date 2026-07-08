@@ -1,0 +1,11 @@
+[package]
+name = "spatil"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Ephraim Shikanga <ephraimshikanga@gmail.com>"]
+description = "A Wayland compositor for tiling and floating window management"
+repository = "https://github.com/EphraimShikanga/spatil"
+
+[dependencies]
+smithay = "0.7.0"
