@@ -111,7 +111,7 @@ Spatil implements a **Nested Backend Architecture** for local debugging and risk
 To run the compositor as a regular client window inside your current desktop environment:
 
 ```bash
-cargo run --features "backend_nested"
+cargo run
 
 ```
 

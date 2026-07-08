@@ -1,3 +1,5 @@
+mod client;
+mod compositor;
 mod renderer;
 mod state;
 
@@ -6,16 +8,20 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
-use wayland_server::Display;
 use smithay::reexports::calloop::EventLoop as CalloopEventLoop;
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::{Interest, Mode, PostAction};
+use smithay::reexports::wayland_server::{Display, DisplayHandle};
+use smithay::wayland::socket::ListeningSocketSource;
 
+use client::ClientState;
 use renderer::WgpuState;
 use state::SpatilState;
 
 struct SpatilApp {
     state: Option<SpatilState>,
     window: Option<Arc<Window>>,
-    wayland_display: Display<SpatilState>,
+    display_handle: DisplayHandle,
     calloop: CalloopEventLoop<'static, SpatilState>,
 }
 
@@ -27,9 +33,9 @@ impl ApplicationHandler for SpatilApp {
             self.window = Some(window.clone());
 
             let wgpu_state = pollster::block_on(WgpuState::new(window));
-            
+
             let state = SpatilState::new(
-                self.wayland_display.handle(),
+                self.display_handle.clone(),
                 self.calloop.get_signal(),
                 wgpu_state,
             );
@@ -60,10 +66,10 @@ impl ApplicationHandler for SpatilApp {
                     Err(e) => eprintln!("{:?}", e),
                 }
                 
-                // Dispatch wayland clients
+                // Dispatch wayland clients and flush any queued outgoing events
                 self.calloop.dispatch(Some(std::time::Duration::from_millis(1)), state).unwrap();
-                self.wayland_display.dispatch_clients(state).unwrap();
-                
+                state.display_handle.flush_clients().unwrap();
+
                 // Request next frame
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -80,12 +86,44 @@ fn main() {
 
     let event_loop = EventLoop::new().unwrap();
     let calloop = CalloopEventLoop::<'static, SpatilState>::try_new().unwrap();
+
     let wayland_display = Display::<SpatilState>::new().unwrap();
+    let display_handle = wayland_display.handle();
+
+    // Dispatch already-connected clients every calloop iteration, not just on redraw.
+    let display_source = Generic::new(wayland_display, Interest::READ, Mode::Level);
+    calloop
+        .handle()
+        .insert_source(display_source, |_, display, state: &mut SpatilState| {
+            // SAFETY: this Generic source owns the Display for its entire life.
+            unsafe { display.get_mut() }.dispatch_clients(state).unwrap();
+            Ok(PostAction::Continue)
+        })
+        .expect("failed to init the wayland display event source");
+
+    let listening_socket = ListeningSocketSource::new_auto().expect("failed to init wayland socket");
+    let socket_name = listening_socket.socket_name().to_string_lossy().into_owned();
+    tracing::info!("Listening on WAYLAND_DISPLAY={socket_name}");
+    unsafe {
+        std::env::set_var("WAYLAND_DISPLAY", &socket_name);
+    }
+
+    calloop
+        .handle()
+        .insert_source(listening_socket, |stream, _, state: &mut SpatilState| {
+            if let Err(err) = state
+                .display_handle
+                .insert_client(stream, Arc::new(ClientState::default()))
+            {
+                tracing::warn!("Error adding wayland client: {err}");
+            }
+        })
+        .expect("failed to init the wayland socket source");
 
     let mut app = SpatilApp {
         state: None,
         window: None,
-        wayland_display,
+        display_handle,
         calloop,
     };
 

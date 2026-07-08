@@ -1826,7 +1826,6 @@ dependencies = [
  "smithay",
  "tracing",
  "tracing-subscriber",
- "wayland-server",
  "wgpu",
  "winit",
 ]
