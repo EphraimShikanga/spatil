@@ -1,5 +1,6 @@
 use smithay::delegate_xdg_shell;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::utils::Serial;
 use smithay::wayland::shell::xdg::{
@@ -31,6 +32,7 @@ impl XdgShellHandler for SpatilState {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.toplevels
             .retain(|t| t.wl_surface() != surface.wl_surface());
+        self.wgpu_state.remove_texture(&surface.wl_surface().id());
     }
 
     // Popups: not yet supported. These are required by the trait, so they're

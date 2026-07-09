@@ -1,0 +1,140 @@
+use cgmath::SquareMatrix;
+use wgpu::util::DeviceExt;
+
+use crate::renderer::pipeline::QuadUniform;
+
+/// A committed surface's pixel buffer uploaded to the GPU, plus the per-quad
+/// state needed to draw it: its own uniform buffer (holding the combined
+/// camera * model matrix for this frame) and a bind group referencing that
+/// buffer, the texture view, and a sampler.
+pub struct TexturedQuad {
+    pub texture: wgpu::Texture,
+    pub bind_group: wgpu::BindGroup,
+    pub uniform_buffer: wgpu::Buffer,
+    /// Pixel dimensions of the source buffer, used to preserve aspect ratio
+    /// when placing the quad in the scene.
+    pub width: u32,
+    pub height: u32,
+}
+
+impl TexturedQuad {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        width: u32,
+        height: u32,
+        stride: u32,
+        bytes: &[u8],
+    ) -> Self {
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("shm surface texture"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // Wayland's little-endian Argb8888/Xrgb8888 SHM formats are
+            // byte-order BGRA in memory -- a direct match, no swizzle needed.
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let bytes_per_pixel = 4;
+        let packed_stride = width * bytes_per_pixel;
+        let packed_bytes: std::borrow::Cow<[u8]> = if stride == packed_stride {
+            std::borrow::Cow::Borrowed(bytes)
+        } else {
+            let mut packed = Vec::with_capacity((packed_stride * height) as usize);
+            for row in 0..height {
+                let start = (row * stride) as usize;
+                let end = start + packed_stride as usize;
+                packed.extend_from_slice(&bytes[start..end]);
+            }
+            std::borrow::Cow::Owned(packed)
+        };
+
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &packed_bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(packed_stride),
+                rows_per_image: Some(height),
+            },
+            size,
+        );
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("shm surface sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("quad uniform buffer"),
+            contents: bytemuck::cast_slice(&[QuadUniform {
+                mvp: cgmath::Matrix4::identity().into(),
+            }]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("quad bind group"),
+            layout: bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        Self {
+            texture,
+            bind_group,
+            uniform_buffer,
+            width,
+            height,
+        }
+    }
+
+    /// Placeholder placement: quads line up side-by-side along X, sized to
+    /// preserve their pixel aspect ratio. This is not real window layout --
+    /// that's the scene graph's job once it exists.
+    pub fn model_matrix(&self, index: usize, total: usize) -> cgmath::Matrix4<f32> {
+        let spacing = 2.5_f32;
+        let start_x = -(total as f32 - 1.0) * spacing / 2.0;
+        let x = start_x + index as f32 * spacing;
+
+        let base_size = 2.0_f32;
+        let (sx, sy) = if self.width >= self.height {
+            (base_size, base_size * self.height as f32 / self.width as f32)
+        } else {
+            (base_size * self.width as f32 / self.height as f32, base_size)
+        };
+
+        cgmath::Matrix4::from_translation(cgmath::Vector3::new(x, 0.0, 0.0))
+            * cgmath::Matrix4::from_nonuniform_scale(sx, sy, 1.0)
+    }
+}
