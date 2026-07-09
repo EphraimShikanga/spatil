@@ -3,7 +3,9 @@ use smithay::reexports::wayland_server::Client;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::buffer::BufferHandler;
-use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
+use smithay::wayland::compositor::{
+    CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes, with_states,
+};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
 use crate::state::SpatilState;
@@ -21,8 +23,29 @@ impl CompositorHandler for SpatilState {
             .compositor_state
     }
 
-    fn commit(&mut self, _surface: &WlSurface) {
+    fn commit(&mut self, surface: &WlSurface) {
         tracing::info!("Received a buffer commit!");
+
+        // xdg-shell handshake enforcement: a toplevel client must not attach a
+        // buffer until it has acked the initial configure. If it commits pixels
+        // early, `ensure_configured` posts a fatal `NotConstructed` protocol error
+        // and the client is disconnected. We only check on commits that actually
+        // attach a buffer — the initial bufferless commit that kicks off the
+        // handshake is legal and must be allowed through.
+        if let Some(toplevel) = self.toplevels.iter().find(|t| t.wl_surface() == surface) {
+            let has_buffer = with_states(surface, |states| {
+                states
+                    .cached_state
+                    .get::<SurfaceAttributes>()
+                    .current()
+                    .buffer
+                    .is_some()
+            });
+            if has_buffer && !toplevel.ensure_configured() {
+                return;
+            }
+        }
+
         // Once buffer/texture import and the scene graph exist, this is where
         // on_commit_buffer_handler and surface updates will hook in.
     }
