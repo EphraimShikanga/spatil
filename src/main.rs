@@ -2,16 +2,16 @@ mod handlers;
 mod renderer;
 mod state;
 
-use std::sync::Arc;
-use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::window::{Window, WindowId};
 use smithay::reexports::calloop::EventLoop as CalloopEventLoop;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, Mode, PostAction};
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
 use smithay::wayland::socket::ListeningSocketSource;
+use std::sync::Arc;
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::window::{Window, WindowId};
 
 use renderer::WgpuState;
 use state::SpatilState;
@@ -35,6 +35,7 @@ impl ApplicationHandler for SpatilApp {
 
             let state = SpatilState::new(
                 self.display_handle.clone(),
+                self.calloop.handle(),
                 self.calloop.get_signal(),
                 wgpu_state,
             );
@@ -67,9 +68,11 @@ impl ApplicationHandler for SpatilApp {
                         ));
                     }
                 }
-                
+
                 // Dispatch wayland clients and flush any queued outgoing events
-                self.calloop.dispatch(Some(std::time::Duration::from_millis(1)), state).unwrap();
+                self.calloop
+                    .dispatch(Some(std::time::Duration::from_millis(1)), state)
+                    .unwrap();
                 state.display_handle.flush_clients().unwrap();
 
                 // Request next frame
@@ -98,13 +101,19 @@ fn main() {
         .handle()
         .insert_source(display_source, |_, display, state: &mut SpatilState| {
             // SAFETY: this Generic source owns the Display for its entire life.
-            unsafe { display.get_mut() }.dispatch_clients(state).unwrap();
+            unsafe { display.get_mut() }
+                .dispatch_clients(state)
+                .unwrap();
             Ok(PostAction::Continue)
         })
         .expect("failed to init the wayland display event source");
 
-    let listening_socket = ListeningSocketSource::new_auto().expect("failed to init wayland socket");
-    let socket_name = listening_socket.socket_name().to_string_lossy().into_owned();
+    let listening_socket =
+        ListeningSocketSource::new_auto().expect("failed to init wayland socket");
+    let socket_name = listening_socket
+        .socket_name()
+        .to_string_lossy()
+        .into_owned();
     tracing::info!("Listening on WAYLAND_DISPLAY={socket_name}");
     unsafe {
         std::env::set_var("WAYLAND_DISPLAY", &socket_name);

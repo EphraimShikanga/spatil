@@ -1,10 +1,13 @@
 pub mod pipeline;
 pub mod texture;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::{Device, Queue, Surface, SurfaceConfiguration};
 use winit::window::Window;
 
+use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::allocator::{Buffer as _, Fourcc, Modifier};
 use smithay::reexports::wayland_server::backend::ObjectId;
 
 use pipeline::{Camera, QuadPipeline, QuadUniform};
@@ -21,9 +24,65 @@ pub struct WgpuState {
     /// surface's Wayland object id. A `Vec` rather than a `HashMap` so draw
     /// order (and therefore placeholder placement) is deterministic.
     pub quads: Vec<(ObjectId, TexturedQuad)>,
+    /// Zero-copy dmabuf textures, keyed by the `wl_buffer`'s object id. Import
+    /// happens once per buffer (in `DmabufHandler::dmabuf_imported`), not per
+    /// commit -- commits just look the texture up here and attach it to the
+    /// committing surface's quad.
+    pub dmabuf_textures: HashMap<ObjectId, (wgpu::Texture, u32, u32, [f32; 2])>,
+    /// The DRM render node (`dev_t`) of the adapter's GPU, queried via
+    /// `VK_EXT_physical_device_drm`. Mesa clients need this advertised through
+    /// dmabuf v4 feedback (`main_device`) to pick the right GPU for their EGL
+    /// context; without it their hardware path fails ("fd -1") and they fall
+    /// back to software rendering. `None` if the driver can't report it.
+    pub main_device_id: Option<u64>,
+    pub dmabuf_modifiers: Vec<Modifier>,
     /// Set when `get_current_texture()` returned `Suboptimal`; reconfigured
     /// right after presenting the current (still-valid) frame.
     needs_reconfigure: bool,
+}
+
+/// Queries the DRM render node device id (`dev_t`) of the adapter's physical
+/// device via `VK_EXT_physical_device_drm`. Advertised to clients as dmabuf
+/// v4 feedback's `main_device` so Mesa knows which GPU to allocate on.
+fn query_render_node_dev_t(adapter: &wgpu::Adapter) -> Option<u64> {
+    // SAFETY: read-only property queries against the adapter's physical
+    // device; the `as_hal` guard is dropped before returning.
+    unsafe {
+        let hal_adapter = adapter.as_hal::<wgpu_hal::api::Vulkan>()?;
+        let shared = hal_adapter.shared_instance();
+        // `get_physical_device_properties2` is core in Vulkan 1.1+.
+        if shared.instance_api_version() < ash::vk::API_VERSION_1_1 {
+            return None;
+        }
+        let instance = shared.raw_instance();
+        let phys = hal_adapter.raw_physical_device();
+
+        // Only chain the DRM-properties struct if the extension is actually
+        // present -- querying an unsupported extension struct is invalid.
+        let ext_supported = instance
+            .enumerate_device_extension_properties(phys)
+            .ok()?
+            .iter()
+            .any(|ext| {
+                ext.extension_name_as_c_str()
+                    .is_ok_and(|name| name == ash::ext::physical_device_drm::NAME)
+            });
+        if !ext_supported {
+            return None;
+        }
+
+        let mut drm_props = ash::vk::PhysicalDeviceDrmPropertiesEXT::default();
+        let mut props2 = ash::vk::PhysicalDeviceProperties2::default().push_next(&mut drm_props);
+        instance.get_physical_device_properties2(phys, &mut props2);
+
+        if drm_props.has_render == 0 {
+            return None;
+        }
+        Some(libc::makedev(
+            drm_props.render_major as libc::c_uint,
+            drm_props.render_minor as libc::c_uint,
+        ))
+    }
 }
 
 /// Result of a `WgpuState::render()` call, for the caller to act on.
@@ -60,7 +119,9 @@ impl WgpuState {
                 apply_limit_buckets: false,
             })
             .await
-            .expect("no Vulkan adapter available -- hardware-accelerated dmabuf import requires Vulkan");
+            .expect(
+                "no Vulkan adapter available -- hardware-accelerated dmabuf import requires Vulkan",
+            );
 
         // Only request the dmabuf-import feature if this adapter actually
         // supports it; otherwise Spatil still runs, just without the
@@ -112,6 +173,22 @@ impl WgpuState {
         let quad_pipeline = QuadPipeline::new(&device, config.format);
         let camera = Camera::new(config.width as f32 / config.height as f32);
 
+        let render_node = query_render_node_dev_t(&adapter);
+        let dmabuf_modifiers = query_dmabuf_modifiers(&adapter);
+
+        let main_device_id = render_node;
+        match main_device_id {
+            Some(dev) => tracing::info!(
+                "adapter DRM render node: dev_t {}:{}",
+                (dev >> 8) & 0xfff,
+                dev & 0xff | ((dev >> 12) & !0xff)
+            ),
+            None => tracing::warn!(
+                "could not query adapter's DRM render node (VK_EXT_physical_device_drm); \
+                 dmabuf v4 feedback unavailable, falling back to v3"
+            ),
+        }
+
         Self {
             surface,
             device,
@@ -120,6 +197,9 @@ impl WgpuState {
             quad_pipeline,
             camera,
             quads: Vec::new(),
+            dmabuf_textures: HashMap::new(),
+            main_device_id,
+            dmabuf_modifiers,
             needs_reconfigure: false,
         }
     }
@@ -143,7 +223,7 @@ impl WgpuState {
         stride: u32,
         bytes: &[u8],
     ) {
-        let quad = TexturedQuad::new(
+        let quad = TexturedQuad::from_bytes(
             &self.device,
             &self.queue,
             &self.quad_pipeline.bind_group_layout,
@@ -152,16 +232,165 @@ impl WgpuState {
             stride,
             bytes,
         );
-        if let Some(existing) = self.quads.iter_mut().find(|(qid, _)| *qid == id) {
-            existing.1 = quad;
-        } else {
-            self.quads.push((id, quad));
+        self.set_quad(id, quad);
+    }
+
+    /// Imports a single-plane, linear-modifier dmabuf as a zero-copy
+    /// `wgpu::Texture` via the Vulkan HAL. Returns the texture without caching
+    /// it -- the dmabuf handler decides how to key it (by `wl_buffer` id, once
+    /// the buffer object exists).
+    pub fn import_dmabuf(&self, dmabuf: &Dmabuf) -> Result<(wgpu::Texture, u32, u32, [f32; 2]), String> {
+        if dmabuf.num_planes() != 1 {
+            return Err(format!(
+                "unsupported plane count {} (single-plane only)",
+                dmabuf.num_planes()
+            ));
         }
+        let format = dmabuf.format();
+        let texture_format = match format.code {
+            // Same little-endian BGRA byte layout as the SHM path.
+            Fourcc::Argb8888 | Fourcc::Xrgb8888 => wgpu::TextureFormat::Bgra8Unorm,
+            other => return Err(format!("unsupported fourcc {other:?}")),
+        };
+
+        tracing::info!(
+            fourcc = %format.code,
+            modifier = ?format.modifier,
+            width = dmabuf.width(),
+            height = dmabuf.height(),
+            stride = dmabuf.strides().next().unwrap_or(0),
+            offset = dmabuf.offsets().next().unwrap_or(0),
+            y_inverted = dmabuf.y_inverted(),
+            wgpu_format = ?texture_format,
+            "attempting dmabuf import"
+        );
+
+        // `texture_from_dmabuf_fd` consumes an OwnedFd (Vulkan takes ownership
+        // on success, closes it on failure). Smithay's Dmabuf only hands out
+        // BorrowedFds it still owns, so dup first -- passing the original
+        // would end in a double-close.
+        let fd = dmabuf
+            .handles()
+            .next()
+            .ok_or_else(|| "dmabuf has no plane fd".to_string())?
+            .try_clone_to_owned()
+            .map_err(|e| format!("failed to dup dmabuf fd: {e}"))?;
+        let stride = u64::from(dmabuf.strides().next().unwrap_or(0));
+        let offset = u64::from(dmabuf.offsets().next().unwrap_or(0));
+
+        let client_width = dmabuf.width();
+        let client_height = dmabuf.height();
+        
+        let bytes_per_pixel = 4; // Bgra8Unorm
+        let texture_width = if format.modifier == Modifier::Linear && stride > 0 {
+            (stride as u32) / bytes_per_pixel
+        } else {
+            client_width
+        };
+
+        let uv_scale_x = client_width as f32 / texture_width as f32;
+
+        let size = wgpu::Extent3d {
+            width: texture_width,
+            height: client_height,
+            depth_or_array_layers: 1,
+        };
+
+        if dmabuf.y_inverted() {
+            tracing::warn!("dmabuf is y-inverted; content will render flipped (not yet handled)");
+        }
+
+        let hal_desc = wgpu_hal::TextureDescriptor {
+            label: Some("dmabuf imported texture"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: texture_format,
+            usage: wgpu::TextureUses::RESOURCE,
+            memory_flags: wgpu_hal::MemoryFlags::empty(),
+            view_formats: vec![],
+        };
+
+        // SAFETY: the instance is created with `Backends::VULKAN`, so the HAL
+        // downcast is to the right backend; `fd` is a freshly dup'd OwnedFd
+        // whose ownership transfers to Vulkan; modifier/stride/offset are the
+        // client-provided plane metadata Smithay validated at params time.
+        let hal_texture = unsafe {
+            let hal_device = self
+                .device
+                .as_hal::<wgpu_hal::api::Vulkan>()
+                .ok_or_else(|| "device is not backed by Vulkan".to_string())?;
+            hal_device
+                .texture_from_dmabuf_fd(fd, &hal_desc, format.modifier.into(), stride, offset)
+                .map_err(|e| format!("Vulkan dmabuf import failed: {e:?}"))?
+        };
+
+        let desc = wgpu::TextureDescriptor {
+            label: Some("dmabuf imported texture"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: texture_format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        };
+        // SAFETY: `hal_texture` was created from this device's own Vulkan
+        // handle and matches `desc`. The imported dmabuf already contains
+        // initialized client-rendered pixels, so do not wrap it as
+        // `UNINITIALIZED` -- that tells wgpu the contents may be discarded as
+        // junk. `RESOURCE` is the closest wgpu-side state for our first use:
+        // sampled read in the fragment shader.
+        let texture = unsafe {
+            self.device
+                .create_texture_from_hal::<wgpu_hal::api::Vulkan>(
+                    hal_texture,
+                    &desc,
+                    wgpu::TextureUses::RESOURCE,
+                )
+        };
+        Ok((texture, client_width, client_height, [uv_scale_x, 1.0]))
+    }
+
+    /// Attaches a previously imported dmabuf texture (keyed by `wl_buffer` id)
+    /// to a surface's quad. Returns `false` if no imported texture exists for
+    /// that buffer.
+    pub fn attach_dmabuf_texture(&mut self, surface_id: ObjectId, buffer_id: &ObjectId) -> bool {
+        let Some((texture, width, height, uv_scale)) = self.dmabuf_textures.get(buffer_id) else {
+            return false;
+        };
+        let quad = TexturedQuad::from_wgpu_texture(
+            &self.device,
+            &self.quad_pipeline.bind_group_layout,
+            texture.clone(),
+            *width,
+            *height,
+            *uv_scale,
+        );
+        self.set_quad(surface_id, quad);
+        true
+    }
+
+    /// Drops an imported dmabuf texture once its `wl_buffer` is destroyed. Any
+    /// quad still displaying it keeps its own clone alive (wgpu resources are
+    /// internally refcounted), so this only releases the cache entry.
+    pub fn remove_dmabuf_texture(&mut self, buffer_id: &ObjectId) {
+        self.dmabuf_textures.remove(buffer_id);
     }
 
     /// Removes a surface's texture, e.g. once its toplevel is destroyed.
     pub fn remove_texture(&mut self, id: &ObjectId) {
         self.quads.retain(|(qid, _)| qid != id);
+    }
+
+    /// Inserts or replaces the quad for a surface.
+    fn set_quad(&mut self, id: ObjectId, quad: TexturedQuad) {
+        if let Some(existing) = self.quads.iter_mut().find(|(qid, _)| *qid == id) {
+            existing.1 = quad;
+        } else {
+            self.quads.push((id, quad));
+        }
     }
 
     /// Acquires and draws a frame. Returns `true` if the caller should
@@ -211,7 +440,7 @@ impl WgpuState {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
+                            r: 1.0,
                             g: 0.0,
                             b: 0.0,
                             a: 1.0,
@@ -242,7 +471,7 @@ impl WgpuState {
                     self.queue.write_buffer(
                         &quad.uniform_buffer,
                         0,
-                        bytemuck::cast_slice(&[QuadUniform { mvp }]),
+                        bytemuck::cast_slice(&[QuadUniform { mvp, uv_scale: quad.uv_scale, _padding: [0.0; 2] }]),
                     );
                     render_pass.set_bind_group(0, &quad.bind_group, &[]);
                     render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
@@ -259,5 +488,58 @@ impl WgpuState {
         }
 
         RenderOutcome::Rendered
+    }
+}
+
+pub fn query_dmabuf_modifiers(adapter: &wgpu::Adapter) -> Vec<Modifier> {
+    unsafe {
+        let Some(hal_adapter) = adapter.as_hal::<wgpu_hal::api::Vulkan>() else {
+            return vec![Modifier::Linear];
+        };
+        let shared = hal_adapter.shared_instance();
+        let instance = shared.raw_instance();
+        let phys = hal_adapter.raw_physical_device();
+
+        if shared.instance_api_version() < ash::vk::API_VERSION_1_1 {
+            return vec![Modifier::Linear];
+        }
+
+        let mut modifier_list = ash::vk::DrmFormatModifierPropertiesListEXT::default();
+        {
+            let mut format_props2 = ash::vk::FormatProperties2::default().push_next(&mut modifier_list);
+            instance.get_physical_device_format_properties2(
+                phys,
+                ash::vk::Format::B8G8R8A8_UNORM,
+                &mut format_props2,
+            );
+        }
+
+        if modifier_list.drm_format_modifier_count == 0 {
+            return vec![Modifier::Linear];
+        }
+
+        let mut modifiers = Vec::with_capacity(modifier_list.drm_format_modifier_count as usize);
+        let mut props = vec![ash::vk::DrmFormatModifierPropertiesEXT::default(); modifier_list.drm_format_modifier_count as usize];
+        modifier_list.p_drm_format_modifier_properties = props.as_mut_ptr();
+        
+        {
+            let mut format_props2 = ash::vk::FormatProperties2::default().push_next(&mut modifier_list);
+            instance.get_physical_device_format_properties2(
+                phys,
+                ash::vk::Format::B8G8R8A8_UNORM,
+                &mut format_props2,
+            );
+        }
+
+        for prop in props {
+            if prop.drm_format_modifier_tiling_features.contains(ash::vk::FormatFeatureFlags::SAMPLED_IMAGE) {
+                modifiers.push(Modifier::from(prop.drm_format_modifier));
+            }
+        }
+        
+        if modifiers.is_empty() {
+            modifiers.push(Modifier::Linear);
+        }
+        modifiers
     }
 }

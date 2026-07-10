@@ -48,6 +48,8 @@ impl Camera {
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct QuadUniform {
     pub mvp: [[f32; 4]; 4],
+    pub uv_scale: [f32; 2],
+    pub _padding: [f32; 2],
 }
 
 #[repr(C)]

@@ -1859,9 +1859,11 @@ dependencies = [
 name = "spatil"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "bytemuck",
  "calloop 0.14.4",
  "cgmath",
+ "libc",
  "pollster",
  "smithay",
  "tracing",

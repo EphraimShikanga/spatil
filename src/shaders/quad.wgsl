@@ -1,5 +1,7 @@
 struct QuadUniform {
     mvp: mat4x4<f32>,
+    uv_scale: vec2<f32>,
+    _padding: vec2<f32>,
 };
 @group(0) @binding(0)
 var<uniform> quad: QuadUniform;
@@ -22,7 +24,7 @@ struct VertexOutput {
 @vertex
 fn vs_main(model: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    out.uv = model.uv;
+    out.uv = model.uv * quad.uv_scale;
     out.clip_position = quad.mvp * vec4<f32>(model.position, 1.0);
     return out;
 }

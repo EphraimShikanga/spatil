@@ -15,10 +15,12 @@ pub struct TexturedQuad {
     /// when placing the quad in the scene.
     pub width: u32,
     pub height: u32,
+    pub uv_scale: [f32; 2],
 }
 
 impl TexturedQuad {
-    pub fn new(
+    /// Builds a quad by uploading raw CPU pixels (the SHM path).
+    pub fn from_bytes(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bind_group_layout: &wgpu::BindGroupLayout,
@@ -75,9 +77,36 @@ impl TexturedQuad {
             size,
         );
 
+        Self::assemble(device, bind_group_layout, texture, width, height, [1.0, 1.0])
+    }
+
+    /// Builds a quad around an already-created texture (the zero-copy dmabuf
+    /// path -- the pixels live in GPU memory the client rendered into; no
+    /// upload happens here).
+    pub fn from_wgpu_texture(
+        device: &wgpu::Device,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        texture: wgpu::Texture,
+        width: u32,
+        height: u32,
+        uv_scale: [f32; 2],
+    ) -> Self {
+        Self::assemble(device, bind_group_layout, texture, width, height, uv_scale)
+    }
+
+    /// Shared tail of both constructors: view, sampler, per-quad uniform
+    /// buffer, and the bind group tying them together.
+    fn assemble(
+        device: &wgpu::Device,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        texture: wgpu::Texture,
+        width: u32,
+        height: u32,
+        uv_scale: [f32; 2],
+    ) -> Self {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("shm surface sampler"),
+            label: Some("surface sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
@@ -87,6 +116,8 @@ impl TexturedQuad {
             label: Some("quad uniform buffer"),
             contents: bytemuck::cast_slice(&[QuadUniform {
                 mvp: cgmath::Matrix4::identity().into(),
+                uv_scale,
+                _padding: [0.0; 2],
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -116,6 +147,7 @@ impl TexturedQuad {
             uniform_buffer,
             width,
             height,
+            uv_scale,
         }
     }
 

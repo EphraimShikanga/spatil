@@ -11,6 +11,10 @@ repository = "https://github.com/EphraimShikanga/spatil"
 smithay = { version = "0.7.0", default-features = false, features = ["wayland_frontend", "desktop"] }
 wgpu = "30"
 wgpu-hal = "30"
+# Both already in the tree transitively (ash via wgpu-hal's Vulkan backend);
+# direct deps only for the VK_EXT_physical_device_drm query + makedev.
+ash = "0.38"
+libc = "0.2"
 winit = "0.30"
 calloop = { version = "0.14", features = ["signals"] }
 tracing = "0.1"
