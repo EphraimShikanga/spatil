@@ -36,7 +36,9 @@ impl DmabufHandler for SpatilState {
                         y_inverted = dmabuf.y_inverted(),
                         "imported dmabuf as zero-copy texture"
                     );
-                    self.wgpu_state.dmabuf_textures.insert(buffer.id(), (texture, width, height, uv_scale));
+                    self.wgpu_state
+                        .dmabuf_textures
+                        .insert(buffer.id(), (texture, width, height, uv_scale));
                 }
                 Err(_) => {
                     tracing::warn!(

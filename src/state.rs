@@ -1,7 +1,7 @@
 pub mod client;
 
 use crate::renderer::WgpuState;
-use smithay::backend::allocator::{Format, Fourcc, Modifier};
+use smithay::backend::allocator::{Format, Fourcc};
 use smithay::input::keyboard::XkbConfig;
 use smithay::input::{Seat, SeatState};
 use smithay::utils::{Logical, Point};
@@ -13,6 +13,7 @@ use smithay::wayland::output::OutputManagerState;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel, Scale};
 use smithay::wayland::shell::xdg::{ToplevelSurface, XdgShellState};
 use smithay::wayland::shm::ShmState;
+use smithay::wayland::xdg_activation::XdgActivationState;
 
 fn env_flag(name: &str) -> bool {
     std::env::var(name).ok().is_some_and(|v| {
@@ -31,6 +32,7 @@ pub struct SpatilState {
     pub compositor_state: CompositorState,
     pub shm_state: ShmState,
     pub xdg_shell_state: XdgShellState,
+    pub xdg_activation_state: XdgActivationState,
     pub output_manager_state: OutputManagerState,
     pub dmabuf_state: DmabufState,
     /// Handle to the `zwp_linux_dmabuf_v1` global, if the wgpu device supports
@@ -58,6 +60,7 @@ pub struct SpatilState {
     /// Monotonic clock, started at compositor boot. Used to compute the
     /// millisecond timestamps `wl_callback::done` events require.
     pub start_time: std::time::Instant,
+    pub world: hecs::World,
 }
 
 impl SpatilState {
@@ -79,6 +82,7 @@ impl SpatilState {
             .expect("failed to initialize the keyboard");
         seat.add_pointer();
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
+        let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
 
         let output = Output::new(
             "spatil-output".to_string(),
@@ -176,6 +180,7 @@ impl SpatilState {
             compositor_state,
             shm_state,
             xdg_shell_state,
+            xdg_activation_state,
             output_manager_state,
             dmabuf_state,
             dmabuf_global,
@@ -185,6 +190,7 @@ impl SpatilState {
             pointer_location: (0.0, 0.0).into(),
             output,
             start_time,
+            world: hecs::World::new(),
         }
     }
 }

@@ -1,6 +1,7 @@
 mod handlers;
 mod input;
 mod renderer;
+mod scene;
 mod state;
 
 use smithay::reexports::calloop::EventLoop as CalloopEventLoop;
@@ -76,7 +77,7 @@ impl ApplicationHandler for SpatilApp {
                 state.handle_pointer_axis(delta);
             }
             WindowEvent::RedrawRequested => {
-                match state.wgpu_state.render() {
+                match state.wgpu_state.render(&mut state.world) {
                     renderer::RenderOutcome::Rendered => {
                         // Unblock every client waiting on wl_surface.frame(): a
                         // frame was just presented, so tell them it's safe to

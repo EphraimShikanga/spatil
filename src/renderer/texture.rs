@@ -42,7 +42,7 @@ impl TexturedQuad {
             dimension: wgpu::TextureDimension::D2,
             // Wayland's little-endian Argb8888/Xrgb8888 SHM formats are
             // byte-order BGRA in memory -- a direct match, no swizzle needed.
-            format: wgpu::TextureFormat::Bgra8Unorm,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -77,11 +77,18 @@ impl TexturedQuad {
             size,
         );
 
-        Self::assemble(device, bind_group_layout, texture, width, height, [1.0, 1.0])
+        Self::assemble(
+            device,
+            bind_group_layout,
+            texture,
+            width,
+            height,
+            [1.0, 1.0],
+        )
     }
 
     /// Builds a quad around an already-created texture (the zero-copy dmabuf
-    /// path -- the pixels live in GPU memory the client rendered into; no
+    /// path, the pixels live in GPU memory the client rendered into; no
     /// upload happens here).
     pub fn from_wgpu_texture(
         device: &wgpu::Device,
@@ -149,24 +156,5 @@ impl TexturedQuad {
             height,
             uv_scale,
         }
-    }
-
-    /// Placeholder placement: quads line up side-by-side along X, sized to
-    /// preserve their pixel aspect ratio. This is not real window layout --
-    /// that's the scene graph's job once it exists.
-    pub fn model_matrix(&self, index: usize, total: usize) -> cgmath::Matrix4<f32> {
-        let spacing = 2.5_f32;
-        let start_x = -(total as f32 - 1.0) * spacing / 2.0;
-        let x = start_x + index as f32 * spacing;
-
-        let base_size = 2.0_f32;
-        let (sx, sy) = if self.width >= self.height {
-            (base_size, base_size * self.height as f32 / self.width as f32)
-        } else {
-            (base_size * self.width as f32 / self.height as f32, base_size)
-        };
-
-        cgmath::Matrix4::from_translation(cgmath::Vector3::new(x, 0.0, 0.0))
-            * cgmath::Matrix4::from_nonuniform_scale(sx, sy, 1.0)
     }
 }

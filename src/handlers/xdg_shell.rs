@@ -8,6 +8,7 @@ use smithay::wayland::shell::xdg::{
 };
 
 use crate::state::SpatilState;
+use crate::scene::components::{Transform, WaylandSurface};
 
 impl XdgShellHandler for SpatilState {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
@@ -28,6 +29,11 @@ impl XdgShellHandler for SpatilState {
         // registry, not a 2D stacking structure the 3D scene graph will absorb it.
         self.toplevels.push(surface.clone());
 
+        self.world.spawn((
+            Transform::default(),
+            WaylandSurface { id: surface.wl_surface().id() }
+        ));
+
         // Give the new window keyboard focus so the user can type into it right
         // away. Pointer focus follows the cursor via motion events.
         if let Some(keyboard) = self.seat.get_keyboard() {
@@ -37,9 +43,22 @@ impl XdgShellHandler for SpatilState {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        let id_to_remove = surface.wl_surface().id();
         self.toplevels
-            .retain(|t| t.wl_surface() != surface.wl_surface());
-        self.wgpu_state.remove_texture(&surface.wl_surface().id());
+            .retain(|t| t.wl_surface().id() != id_to_remove);
+            
+        let mut entity_to_despawn = None;
+        for (entity, wayland_surface) in self.world.query::<&WaylandSurface>().iter() {
+            if wayland_surface.id == id_to_remove {
+                entity_to_despawn = Some(entity);
+                break;
+            }
+        }
+        if let Some(entity) = entity_to_despawn {
+            let _ = self.world.despawn(entity);
+        }
+
+        self.wgpu_state.remove_texture(&id_to_remove);
     }
 
     // Popups: not yet supported. These are required by the trait, so they're

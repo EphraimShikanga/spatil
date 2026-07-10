@@ -1,3 +1,4 @@
+pub mod background;
 pub mod pipeline;
 pub mod texture;
 
@@ -13,12 +14,17 @@ use smithay::reexports::wayland_server::backend::ObjectId;
 use pipeline::{Camera, QuadPipeline, QuadUniform};
 use texture::TexturedQuad;
 
+use crate::scene::components::{Transform, WaylandSurface};
+use crate::scene::systems::update_world_matrices;
+
 pub struct WgpuState {
     pub surface: Surface<'static>,
     pub device: Device,
     pub queue: Queue,
     pub config: SurfaceConfiguration,
+    pub depth_texture_view: wgpu::TextureView,
     pub quad_pipeline: QuadPipeline,
+    pub background_pipeline: background::BackgroundPipeline,
     pub camera: Camera,
     /// Live textured quads, one per committed toplevel surface, keyed by the
     /// surface's Wayland object id. A `Vec` rather than a `HashMap` so draw
@@ -170,7 +176,24 @@ impl WgpuState {
         };
         surface.configure(&device, &config);
 
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Depth Texture"),
+            size: wgpu::Extent3d {
+                width: config.width.max(1),
+                height: config.height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         let quad_pipeline = QuadPipeline::new(&device, config.format);
+        let background_pipeline = background::BackgroundPipeline::new(&device, config.format);
         let camera = Camera::new(config.width as f32 / config.height as f32);
 
         let render_node = query_render_node_dev_t(&adapter);
@@ -194,7 +217,9 @@ impl WgpuState {
             device,
             queue,
             config,
+            depth_texture_view,
             quad_pipeline,
+            background_pipeline,
             camera,
             quads: Vec::new(),
             dmabuf_textures: HashMap::new(),
@@ -209,6 +234,24 @@ impl WgpuState {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+
+            let depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Depth Texture"),
+                size: wgpu::Extent3d {
+                    width: self.config.width.max(1),
+                    height: self.config.height.max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            self.depth_texture_view =
+                depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
             self.camera.aspect = new_size.width as f32 / new_size.height as f32;
         }
     }
@@ -239,7 +282,10 @@ impl WgpuState {
     /// `wgpu::Texture` via the Vulkan HAL. Returns the texture without caching
     /// it -- the dmabuf handler decides how to key it (by `wl_buffer` id, once
     /// the buffer object exists).
-    pub fn import_dmabuf(&self, dmabuf: &Dmabuf) -> Result<(wgpu::Texture, u32, u32, [f32; 2]), String> {
+    pub fn import_dmabuf(
+        &self,
+        dmabuf: &Dmabuf,
+    ) -> Result<(wgpu::Texture, u32, u32, [f32; 2]), String> {
         if dmabuf.num_planes() != 1 {
             return Err(format!(
                 "unsupported plane count {} (single-plane only)",
@@ -248,8 +294,10 @@ impl WgpuState {
         }
         let format = dmabuf.format();
         let texture_format = match format.code {
-            // Same little-endian BGRA byte layout as the SHM path.
-            Fourcc::Argb8888 | Fourcc::Xrgb8888 => wgpu::TextureFormat::Bgra8Unorm,
+            // Use Srgb format so textureSample automatically performs sRGB-to-linear conversion.
+            // When written to an Srgb swapchain, wgpu will convert it back. This is the only
+            // way to guarantee correct linear blending and avoid the double-gamma "grey wash".
+            Fourcc::Argb8888 | Fourcc::Xrgb8888 => wgpu::TextureFormat::Bgra8UnormSrgb,
             other => return Err(format!("unsupported fourcc {other:?}")),
         };
 
@@ -280,7 +328,7 @@ impl WgpuState {
 
         let client_width = dmabuf.width();
         let client_height = dmabuf.height();
-        
+
         let bytes_per_pixel = 4; // Bgra8Unorm
         let texture_width = if format.modifier == Modifier::Linear && stride > 0 {
             (stride as u32) / bytes_per_pixel
@@ -398,7 +446,9 @@ impl WgpuState {
     /// next frame; the surface is already reconfigured internally for the
     /// `Outdated` case, so this is only for the `Lost` case, which needs the
     /// full width/height passed back in via `resize()`.
-    pub fn render(&mut self) -> RenderOutcome {
+    pub fn render(&mut self, world: &mut hecs::World) -> RenderOutcome {
+        update_world_matrices(world);
+
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
             wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
@@ -448,15 +498,26 @@ impl WgpuState {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 occlusion_query_set: None,
                 timestamp_writes: None,
                 multiview_mask: None,
             });
 
             if !self.quads.is_empty() {
+                // This is to just test the 3d effect by rotating the camera for now
+                static START_TIME: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
+                let time = START_TIME.elapsed().as_secs_f32();
+                self.camera.eye = cgmath::Point3::new(time.sin() * 5.0, 0.0, time.cos() * 5.0);
+                
                 let view_proj = self.camera.build_view_projection_matrix();
-                let total = self.quads.len();
 
                 render_pass.set_pipeline(&self.quad_pipeline.pipeline);
                 render_pass.set_vertex_buffer(0, self.quad_pipeline.vertex_buffer.slice(..));
@@ -465,18 +526,34 @@ impl WgpuState {
                     wgpu::IndexFormat::Uint16,
                 );
 
-                for (index, (_, quad)) in self.quads.iter().enumerate() {
-                    let model = quad.model_matrix(index, total);
-                    let mvp: [[f32; 4]; 4] = (view_proj * model).into();
-                    self.queue.write_buffer(
-                        &quad.uniform_buffer,
-                        0,
-                        bytemuck::cast_slice(&[QuadUniform { mvp, uv_scale: quad.uv_scale, _padding: [0.0; 2] }]),
-                    );
-                    render_pass.set_bind_group(0, &quad.bind_group, &[]);
-                    render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
+                for (_id, (transform, wayland_surface)) in
+                    world.query_mut::<(&Transform, &WaylandSurface)>()
+                {
+                    if let Some((_, quad)) = self
+                        .quads
+                        .iter()
+                        .find(|(qid, _)| *qid == wayland_surface.id)
+                    {
+                        let model = transform.world_matrix;
+                        let mvp: [[f32; 4]; 4] = (view_proj * model).into();
+                        self.queue.write_buffer(
+                            &quad.uniform_buffer,
+                            0,
+                            bytemuck::cast_slice(&[QuadUniform {
+                                mvp,
+                                uv_scale: quad.uv_scale,
+                                _padding: [0.0; 2],
+                            }]),
+                        );
+                        render_pass.set_bind_group(0, &quad.bind_group, &[]);
+                        render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
+                    }
                 }
             }
+
+            // Draw background last so it fills in any empty space
+            render_pass.set_pipeline(&self.background_pipeline.pipeline);
+            render_pass.draw(0..3, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -506,7 +583,8 @@ pub fn query_dmabuf_modifiers(adapter: &wgpu::Adapter) -> Vec<Modifier> {
 
         let mut modifier_list = ash::vk::DrmFormatModifierPropertiesListEXT::default();
         {
-            let mut format_props2 = ash::vk::FormatProperties2::default().push_next(&mut modifier_list);
+            let mut format_props2 =
+                ash::vk::FormatProperties2::default().push_next(&mut modifier_list);
             instance.get_physical_device_format_properties2(
                 phys,
                 ash::vk::Format::B8G8R8A8_UNORM,
@@ -519,11 +597,15 @@ pub fn query_dmabuf_modifiers(adapter: &wgpu::Adapter) -> Vec<Modifier> {
         }
 
         let mut modifiers = Vec::with_capacity(modifier_list.drm_format_modifier_count as usize);
-        let mut props = vec![ash::vk::DrmFormatModifierPropertiesEXT::default(); modifier_list.drm_format_modifier_count as usize];
+        let mut props = vec![
+            ash::vk::DrmFormatModifierPropertiesEXT::default();
+            modifier_list.drm_format_modifier_count as usize
+        ];
         modifier_list.p_drm_format_modifier_properties = props.as_mut_ptr();
-        
+
         {
-            let mut format_props2 = ash::vk::FormatProperties2::default().push_next(&mut modifier_list);
+            let mut format_props2 =
+                ash::vk::FormatProperties2::default().push_next(&mut modifier_list);
             instance.get_physical_device_format_properties2(
                 phys,
                 ash::vk::Format::B8G8R8A8_UNORM,
@@ -532,11 +614,14 @@ pub fn query_dmabuf_modifiers(adapter: &wgpu::Adapter) -> Vec<Modifier> {
         }
 
         for prop in props {
-            if prop.drm_format_modifier_tiling_features.contains(ash::vk::FormatFeatureFlags::SAMPLED_IMAGE) {
+            if prop
+                .drm_format_modifier_tiling_features
+                .contains(ash::vk::FormatFeatureFlags::SAMPLED_IMAGE)
+            {
                 modifiers.push(Modifier::from(prop.drm_format_modifier));
             }
         }
-        
+
         if modifiers.is_empty() {
             modifiers.push(Modifier::Linear);
         }

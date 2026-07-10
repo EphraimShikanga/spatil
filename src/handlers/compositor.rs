@@ -4,8 +4,8 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Resource};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    with_surface_tree_downward, BufferAssignment, CompositorClientState, CompositorHandler,
-    CompositorState, SurfaceAttributes, TraversalAction, with_states,
+    BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
+    TraversalAction, with_states, with_surface_tree_downward,
 };
 use smithay::wayland::dmabuf::get_dmabuf;
 use smithay::wayland::shm::{self, ShmHandler, ShmState};
@@ -51,9 +51,11 @@ impl CompositorHandler for SpatilState {
             }
         }
 
-        let is_toplevel = target_toplevel.as_ref().map(|t| t.wl_surface() == surface).unwrap_or(false);
-        tracing::info!(surface_id = ?surface.id(), is_toplevel, "Received a buffer commit!");
-
+        let is_toplevel = target_toplevel
+            .as_ref()
+            .map(|t| t.wl_surface() == surface)
+            .unwrap_or(false);
+        tracing::trace!(surface_id = ?surface.id(), is_toplevel, "Received a buffer commit!");
 
         let Some(toplevel) = target_toplevel else {
             // Not part of any tracked toplevel's surface tree.
@@ -112,7 +114,7 @@ impl CompositorHandler for SpatilState {
             {
                 tracing::warn!(surface_id = ?surface.id(), buffer_id = ?buffer.id(), "commit with a dmabuf buffer that was never imported");
             } else {
-                tracing::info!(surface_id = ?surface.id(), buffer_id = ?buffer.id(), "attached imported dmabuf texture to toplevel surface");
+                tracing::trace!(surface_id = ?surface.id(), buffer_id = ?buffer.id(), "attached imported dmabuf texture to toplevel surface");
             }
             return;
         }
@@ -156,8 +158,13 @@ impl CompositorHandler for SpatilState {
                     tracing::info!(surface_id = ?surface.id(), width, height, "ignoring tiny subsurface SHM texture to prevent overwriting the main quad");
                 } else {
                     tracing::info!(surface_id = ?surface.id(), width, height, stride, "uploading SHM texture for toplevel surface");
-                    self.wgpu_state
-                        .upload_shm_texture(target_surface_id, width, height, stride, &bytes);
+                    self.wgpu_state.upload_shm_texture(
+                        target_surface_id,
+                        width,
+                        height,
+                        stride,
+                        &bytes,
+                    );
                 }
             }
             Ok(None) => {
@@ -174,7 +181,7 @@ impl BufferHandler for SpatilState {
     fn buffer_destroyed(&mut self, buffer: &WlBuffer) {
         // Release any zero-copy texture imported from this buffer. A quad
         // still displaying it holds its own clone (wgpu refcounts internally),
-        // so this only drops our cache entry -- but without it we'd leak one
+        // so this only drops our cache entry, but without it we'd leak one
         // GPU texture per destroyed dmabuf buffer.
         self.wgpu_state.remove_dmabuf_texture(&buffer.id());
     }
