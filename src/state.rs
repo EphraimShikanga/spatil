@@ -2,7 +2,9 @@ pub mod client;
 
 use crate::renderer::WgpuState;
 use smithay::backend::allocator::{Format, Fourcc, Modifier};
+use smithay::input::keyboard::XkbConfig;
 use smithay::input::{Seat, SeatState};
+use smithay::utils::{Logical, Point};
 use smithay::reexports::calloop::{LoopHandle, LoopSignal};
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::wayland::compositor::CompositorState;
@@ -41,12 +43,21 @@ pub struct SpatilState {
     /// 2D stacking/layout semantics. It's a flat "which toplevels exist" list that
     /// the 3D scene graph will eventually absorb once scene nodes exist.
     pub toplevels: Vec<ToplevelSurface>,
-    /// Minimal seat foundation. xdg-shell's popup-grab dispatch requires
-    /// `SeatHandler`, and real clients need a `wl_seat` to receive input, so a
-    /// seat is created here. Input routing itself is not yet wired (no keyboard/
-    /// pointer added); that is future work.
+    /// Seat with a keyboard and pointer added, so real clients receive input.
+    /// Winit window events are translated into smithay input calls in
+    /// `src/input.rs`. Touch is intentionally left out for now.
     pub seat_state: SeatState<SpatilState>,
     pub seat: Seat<SpatilState>,
+    /// Current pointer position, in the compositor's logical space. Tracked so
+    /// button/axis events can reuse the last motion location.
+    pub pointer_location: Point<f64, Logical>,
+    /// The single virtual output. Stored so per-frame code (frame callbacks,
+    /// future scanout tracking) can reference it; previously constructed in
+    /// `new()` and discarded once `create_global` returned.
+    pub output: Output,
+    /// Monotonic clock, started at compositor boot. Used to compute the
+    /// millisecond timestamps `wl_callback::done` events require.
+    pub start_time: std::time::Instant,
 }
 
 impl SpatilState {
@@ -56,11 +67,17 @@ impl SpatilState {
         loop_signal: LoopSignal,
         wgpu_state: WgpuState,
     ) -> Self {
+        let start_time = std::time::Instant::now();
         let compositor_state = CompositorState::new_v6::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
-        let seat = seat_state.new_wl_seat(&display_handle, "seat0");
+        let mut seat = seat_state.new_wl_seat(&display_handle, "seat0");
+        // Add the input devices the seat advertises to clients. `XkbConfig::default()`
+        // respects the usual `XKB_DEFAULT_*` env vars (falling back to "us").
+        seat.add_keyboard(XkbConfig::default(), 200, 25)
+            .expect("failed to initialize the keyboard");
+        seat.add_pointer();
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
         let output = Output::new(
@@ -165,6 +182,9 @@ impl SpatilState {
             toplevels: Vec::new(),
             seat_state,
             seat,
+            pointer_location: (0.0, 0.0).into(),
+            output,
+            start_time,
         }
     }
 }

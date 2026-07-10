@@ -2,7 +2,7 @@ use smithay::delegate_xdg_shell;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
-use smithay::utils::Serial;
+use smithay::utils::{Serial, SERIAL_COUNTER};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
@@ -26,7 +26,14 @@ impl XdgShellHandler for SpatilState {
 
         // Register the toplevel so `commit` can find it. This is a flat object
         // registry, not a 2D stacking structure the 3D scene graph will absorb it.
-        self.toplevels.push(surface);
+        self.toplevels.push(surface.clone());
+
+        // Give the new window keyboard focus so the user can type into it right
+        // away. Pointer focus follows the cursor via motion events.
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            let serial = SERIAL_COUNTER.next_serial();
+            keyboard.set_focus(self, Some(surface.wl_surface().clone()), serial);
+        }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {

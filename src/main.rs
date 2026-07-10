@@ -1,4 +1,5 @@
 mod handlers;
+mod input;
 mod renderer;
 mod state;
 
@@ -58,9 +59,43 @@ impl ApplicationHandler for SpatilApp {
             WindowEvent::Resized(size) => {
                 state.wgpu_state.resize(size);
             }
+            WindowEvent::KeyboardInput { event, .. } => {
+                state.handle_keyboard(event);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                state.handle_pointer_motion(position);
+            }
+            WindowEvent::MouseInput {
+                state: btn_state,
+                button,
+                ..
+            } => {
+                state.handle_pointer_button(button, btn_state);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                state.handle_pointer_axis(delta);
+            }
             WindowEvent::RedrawRequested => {
                 match state.wgpu_state.render() {
-                    renderer::RenderOutcome::Rendered | renderer::RenderOutcome::Skipped => {}
+                    renderer::RenderOutcome::Rendered => {
+                        // Unblock every client waiting on wl_surface.frame(): a
+                        // frame was just presented, so tell them it's safe to
+                        // draw the next one. Snapshot output/time into locals
+                        // first so the closure doesn't need to borrow `state`
+                        // while `&state.toplevels` is already borrowed.
+                        let output = state.output.clone();
+                        let elapsed = state.start_time.elapsed();
+                        for toplevel in &state.toplevels {
+                            smithay::desktop::utils::send_frames_surface_tree(
+                                toplevel.wl_surface(),
+                                &output,
+                                elapsed,
+                                Some(std::time::Duration::ZERO),
+                                |_, _| Some(output.clone()),
+                            );
+                        }
+                    }
+                    renderer::RenderOutcome::Skipped => {}
                     renderer::RenderOutcome::Lost => {
                         state.wgpu_state.resize(winit::dpi::PhysicalSize::new(
                             state.wgpu_state.config.width.max(1),
