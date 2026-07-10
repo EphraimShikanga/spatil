@@ -59,10 +59,13 @@ impl ApplicationHandler for SpatilApp {
             }
             WindowEvent::RedrawRequested => {
                 match state.wgpu_state.render() {
-                    Ok(_) => {}
-                    Err(wgpu::SurfaceError::Lost) => state.wgpu_state.resize(winit::dpi::PhysicalSize::new(state.wgpu_state.config.width.max(1), state.wgpu_state.config.height.max(1))),
-                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-                    Err(e) => eprintln!("{:?}", e),
+                    renderer::RenderOutcome::Rendered | renderer::RenderOutcome::Skipped => {}
+                    renderer::RenderOutcome::Lost => {
+                        state.wgpu_state.resize(winit::dpi::PhysicalSize::new(
+                            state.wgpu_state.config.width.max(1),
+                            state.wgpu_state.config.height.max(1),
+                        ));
+                    }
                 }
                 
                 // Dispatch wayland clients and flush any queued outgoing events

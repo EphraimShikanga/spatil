@@ -9,7 +9,8 @@ repository = "https://github.com/EphraimShikanga/spatil"
 
 [dependencies]
 smithay = { version = "0.7.0", default-features = false, features = ["wayland_frontend", "desktop"] }
-wgpu = "25"
+wgpu = "30"
+wgpu-hal = "30"
 winit = "0.30"
 calloop = { version = "0.14", features = ["signals"] }
 tracing = "0.1"

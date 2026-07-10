@@ -21,15 +21,33 @@ pub struct WgpuState {
     /// surface's Wayland object id. A `Vec` rather than a `HashMap` so draw
     /// order (and therefore placeholder placement) is deterministic.
     pub quads: Vec<(ObjectId, TexturedQuad)>,
+    /// Set when `get_current_texture()` returned `Suboptimal`; reconfigured
+    /// right after presenting the current (still-valid) frame.
+    needs_reconfigure: bool,
+}
+
+/// Result of a `WgpuState::render()` call, for the caller to act on.
+pub enum RenderOutcome {
+    /// A frame was drawn and presented.
+    Rendered,
+    /// No frame was presented this pass (occluded/timeout/outdated/etc.) --
+    /// not an error, just try again next frame.
+    Skipped,
+    /// The surface was lost and needs a full `resize()` to recreate it.
+    Lost,
 }
 
 impl WgpuState {
     pub async fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
 
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
-            ..Default::default()
+        // Forced to Vulkan (not `Backends::PRIMARY`): dmabuf zero-copy import
+        // (`wgpu_hal::vulkan::Device::texture_from_dmabuf_fd`) only exists on
+        // the Vulkan HAL backend. `display` is left unset -- wgpu's docs note
+        // it's unused on Vulkan (only GLES needs it for presentation).
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
         let surface = instance.create_surface(window.clone()).unwrap();
@@ -39,20 +57,34 @@ impl WgpuState {
                 power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
-            .unwrap();
+            .expect("no Vulkan adapter available -- hardware-accelerated dmabuf import requires Vulkan");
+
+        // Only request the dmabuf-import feature if this adapter actually
+        // supports it; otherwise Spatil still runs, just without the
+        // `zwp_linux_dmabuf_v1` global (SHM-only).
+        let adapter_features = adapter.features();
+        let dmabuf_import_supported =
+            adapter_features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF);
+        let required_features = if dmabuf_import_supported {
+            wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF
+        } else {
+            tracing::warn!(
+                "adapter does not support VULKAN_EXTERNAL_MEMORY_DMA_BUF -- dmabuf import will be unavailable"
+            );
+            wgpu::Features::empty()
+        };
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
-                    memory_hints: wgpu::MemoryHints::default(),
-                    ..Default::default()
-                }
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features,
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+                ..Default::default()
+            })
             .await
             .unwrap();
 
@@ -67,6 +99,7 @@ impl WgpuState {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
+            color_space: wgpu::SurfaceColorSpace::Auto,
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: surface_caps.present_modes[0],
@@ -87,6 +120,7 @@ impl WgpuState {
             quad_pipeline,
             camera,
             quads: Vec::new(),
+            needs_reconfigure: false,
         }
     }
 
@@ -130,9 +164,35 @@ impl WgpuState {
         self.quads.retain(|(qid, _)| qid != id);
     }
 
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
-        let view = output
+    /// Acquires and draws a frame. Returns `true` if the caller should
+    /// reconfigure the surface (e.g. after resize/output-change) before the
+    /// next frame; the surface is already reconfigured internally for the
+    /// `Outdated` case, so this is only for the `Lost` case, which needs the
+    /// full width/height passed back in via `resize()`.
+    pub fn render(&mut self) -> RenderOutcome {
+        let surface_texture = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) => t,
+            wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
+                // Still valid to draw to this frame; reconfigure right after
+                // presenting so the next frame is optimal.
+                self.needs_reconfigure = true;
+                t
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                // Docs: "Call Surface::configure() and try again."
+                self.surface.configure(&self.device, &self.config);
+                return RenderOutcome::Skipped;
+            }
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Validation => {
+                return RenderOutcome::Skipped;
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                return RenderOutcome::Lost;
+            }
+        };
+        let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -147,6 +207,7 @@ impl WgpuState {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -161,6 +222,7 @@ impl WgpuState {
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
                 timestamp_writes: None,
+                multiview_mask: None,
             });
 
             if !self.quads.is_empty() {
@@ -189,8 +251,13 @@ impl WgpuState {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+        self.queue.present(surface_texture);
 
-        Ok(())
+        if self.needs_reconfigure {
+            self.needs_reconfigure = false;
+            self.surface.configure(&self.device, &self.config);
+        }
+
+        RenderOutcome::Rendered
     }
 }

@@ -30,6 +30,9 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var color = textureSample(t_diffuse, s_diffuse, in.uv);
-    color.a = 0.0;
+    // Force opaque: Xrgb8888's alpha byte is undefined, and with alpha blending
+    // a src alpha of 0 would make the quad vanish into the background. Writing
+    // a=1.0 also keeps Spatil's own framebuffer opaque to the host compositor.
+    color.a = 1.0;
     return color;
 }
