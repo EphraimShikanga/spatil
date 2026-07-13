@@ -41,11 +41,17 @@ default_height = 600
 # connected the window is revealed immediately, ignoring this value.
 map_timeout_ms = 80
 
-# The 3D environment ("Strata"). Windows float above a bounded grid floor, lit
-# by a single directional light. Colors, camera/window angles, and the light
-# position hot-reload on save — no restart needed — so you can tune the look
-# live. Colors are #RRGGBB or #RRGGBBAA (sRGB, as a color picker reports them).
+# The 3D environment. `mode` selects the scene: "strata" (windows floating above
+# a bounded grid floor) or "aether" (weightless billboard panes in a dark void).
+# Each mode has its own sub-table below; only the active one is used, but both
+# hot-reload on save so you can switch live. Colors are #RRGGBB or #RRGGBBAA
+# (sRGB, as a color picker reports them).
 [scene_graph]
+mode = "strata"             # "strata" | "aether"
+
+# Strata: windows recline above a bounded grid floor, lit by one directional
+# light. Colors, camera/window angles, and the light position hot-reload.
+[scene_graph.strata]
 enable_shadows = true       # windows cast shadows onto the grid floor
 camera_pitch = -15.0        # degrees the camera looks down at the floor (shallower = more hallway, steeper = more top-down)
 window_pitch = 30.0         # degrees each window reclines back toward the camera
@@ -58,6 +64,20 @@ grid_spacing = 0.05         # world-space distance between grid lines (smaller =
 grid_depth = 1.5            # distance to the horizon (grid fades to void), x on-screen depth; 0 = infinite
 grid_width = 1.25           # grid half-width, x on-screen width; >1 spills past the screen edges
 shadow_map_size = 2048      # shadow map resolution in px (square); restart to change
+
+# Aether: flat billboard windows layered in depth over a matte void with a
+# procedural dot field. (The dot field, parallax, and glass tint land in a later
+# phase; for now this mode shows windows layered on the void color.)
+[scene_graph.aether]
+void_color = "#0F0F11"      # matte slate backdrop / clear color
+dot_color = "#D1D1D6"       # dot-field color
+dot_spacing = 0.08          # world-space spacing of the dot lattice
+dot_radius = 0.06           # dot size as a fraction of spacing
+parallax_strength = 0.5     # max camera shift (world units) from mouse at the screen margin
+glass_alpha = 0.85          # window opacity (multiplied with the client's own alpha)
+glass_tint = "#12141A"      # tint blended under the surface
+glass_tint_strength = 0.25  # 0 = pure surface, 1 = full tint
+z_layer_gap = 0.35          # Z distance between successive window layers
 
 # Autostart: commands run once when Spatil starts, via `sh -c`. The working
 # directory is this config dir, so a relative path like "hooks/auto_place.py"

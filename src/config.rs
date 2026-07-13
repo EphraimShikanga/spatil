@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use toml::Value;
 
+use crate::scene::mode::SceneMode;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SpatilConfig {
@@ -59,9 +61,27 @@ pub struct Windows {
     pub map_timeout_ms: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct SceneGraph {
+    pub mode: String,
+    pub strata: Strata,
+    pub aether: Aether,
+}
+
+impl SceneGraph {
+    pub fn scene_mode(&self) -> SceneMode {
+        if self.mode.is_empty() {
+            SceneMode::default()
+        } else {
+            SceneMode::from_config(&self.mode)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Strata {
     pub enable_shadows: bool,
     pub camera_pitch: f32,
     pub window_pitch: f32,
@@ -76,12 +96,12 @@ pub struct SceneGraph {
     pub shadow_map_size: u32,
 }
 
-impl Default for SceneGraph {
+impl Default for Strata {
     fn default() -> Self {
         Self {
             enable_shadows: true,
             camera_pitch: -15.0,
-            window_pitch: 15.0,
+            window_pitch: 30.0,
             window_hover_height: 0.5,
             light_position: [-5.0, 10.0, 5.0],
             grid_color: "#1E2D2F".to_string(),
@@ -91,6 +111,36 @@ impl Default for SceneGraph {
             grid_depth: 1.5,
             grid_width: 1.25,
             shadow_map_size: 2048,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Aether {
+    pub void_color: String,
+    pub dot_color: String,
+    pub dot_spacing: f32,
+    pub dot_radius: f32,
+    pub parallax_strength: f32,
+    pub glass_alpha: f32,
+    pub glass_tint: String,
+    pub glass_tint_strength: f32,
+    pub z_layer_gap: f32,
+}
+
+impl Default for Aether {
+    fn default() -> Self {
+        Self {
+            void_color: "#0F0F11".to_string(),
+            dot_color: "#D1D1D6".to_string(),
+            dot_spacing: 0.08,
+            dot_radius: 0.06,
+            parallax_strength: 0.5,
+            glass_alpha: 0.85,
+            glass_tint: "#12141A".to_string(),
+            glass_tint_strength: 0.25,
+            z_layer_gap: 0.35,
         }
     }
 }
@@ -308,6 +358,30 @@ mod tests {
         assert!(g > 0.0 && g < 0.5, "expected linearized gray, got {g}");
         // Garbage degrades to opaque black, never panics.
         assert_eq!(parse_hex_color("nope"), [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn scene_mode_parses_case_insensitively_and_degrades() {
+        assert_eq!("strata".parse(), Ok(SceneMode::Strata));
+        assert_eq!("AETHER".parse(), Ok(SceneMode::Aether));
+        assert_eq!(SceneMode::from_config("aether"), SceneMode::Aether);
+        // Unknown / empty degrade to the default (Strata).
+        assert_eq!(SceneMode::from_config("nope"), SceneMode::Strata);
+        assert_eq!(SceneGraph::default().scene_mode(), SceneMode::Strata);
+    }
+
+    #[test]
+    fn nested_scene_graph_selects_mode_and_fills_defaults() {
+        let cfg: SpatilConfig = toml::from_str(
+            "[scene_graph]\nmode = \"aether\"\n\
+             [scene_graph.aether]\nz_layer_gap = 1.0\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.scene_graph.scene_mode(), SceneMode::Aether);
+        assert_eq!(cfg.scene_graph.aether.z_layer_gap, 1.0);
+        // Untouched sub-table keeps its defaults.
+        assert_eq!(cfg.scene_graph.strata.camera_pitch, -15.0);
+        assert_eq!(cfg.scene_graph.aether.void_color, "#0F0F11");
     }
 
     #[test]

@@ -7,11 +7,9 @@ use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
 
-use cgmath::{Deg, Quaternion, Rotation3};
-
 use crate::state::SpatilState;
-use crate::scene::components::{Transform, WaylandSurface};
-use crate::scene::systems::default_window_placement;
+use crate::scene::components::WaylandSurface;
+use crate::scene::mode::default_transform;
 
 impl XdgShellHandler for SpatilState {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
@@ -36,12 +34,8 @@ impl XdgShellHandler for SpatilState {
         self.toplevels.push(surface.clone());
 
         let window_id = self.next_window_id();
-        let scene = &self.config.scene_graph;
-        let transform = Transform {
-            translation: default_window_placement(window_id, scene.window_hover_height),
-            rotation: Quaternion::from_angle_x(Deg(-scene.window_pitch)),
-            ..Transform::default()
-        };
+        let mode = self.config.scene_graph.scene_mode();
+        let transform = default_transform(mode, window_id, &self.config.scene_graph);
         self.world.spawn((
             transform,
             WaylandSurface::new(surface.wl_surface().id(), window_id),

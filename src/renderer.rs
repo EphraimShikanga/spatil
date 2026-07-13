@@ -17,6 +17,7 @@ use smithay::reexports::wayland_server::backend::ObjectId;
 use crate::config::{Display, SceneGraph, SpatilConfig, parse_hex_color};
 use crate::scene::WORLD_SCALE;
 use crate::scene::components::{Transform, WaylandSurface};
+use crate::scene::mode::{self, CameraFraming, SceneMode};
 use crate::scene::systems::update_world_matrices;
 
 use grid::{GridPipeline, GridUniform};
@@ -53,9 +54,11 @@ pub struct WgpuState {
     pub shadow_pipeline: ShadowPipeline,
     pub shadow_map: ShadowMap,
     pub camera: Camera,
+    pub scene_mode: SceneMode,
     pub grid_color: [f32; 4],
     pub void_color: [f32; 4],
     pub axis_color: [f32; 4],
+    pub aether_void_color: [f32; 4],
     pub floor_half: [f32; 2],
     pub light_position: [f32; 3],
     pub grid_spacing: f32,
@@ -207,16 +210,26 @@ impl WgpuState {
         let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let scene = &config.scene_graph;
+        let strata = &scene.strata;
+        let scene_mode = scene.scene_mode();
         let floor_half = floor_half_extent(&config.display);
 
         let quad_pipeline = QuadPipeline::new(&device, surface_config.format);
         let shadow_pipeline = ShadowPipeline::new(&device);
-        let shadow_map = ShadowMap::new(&device, scene.shadow_map_size);
+        let shadow_map = ShadowMap::new(&device, strata.shadow_map_size);
         let grid_pipeline = GridPipeline::new(&device, surface_config.format, &shadow_map);
-        let camera = Camera::new(
+        let mut camera = Camera::new(
             surface_config.width as f32 / surface_config.height as f32,
-            scene.camera_pitch,
+            strata.camera_pitch,
             floor_half,
+        );
+        mode::frame_camera(
+            scene_mode,
+            &mut camera,
+            &CameraFraming {
+                camera_pitch: strata.camera_pitch,
+                floor_half,
+            },
         );
 
         let render_node = query_render_node_dev_t(&adapter);
@@ -246,15 +259,17 @@ impl WgpuState {
             shadow_pipeline,
             shadow_map,
             camera,
-            grid_color: parse_hex_color(&scene.grid_color),
-            void_color: parse_hex_color(&scene.void_color),
-            axis_color: parse_hex_color(&scene.axis_color),
+            scene_mode,
+            grid_color: parse_hex_color(&strata.grid_color),
+            void_color: parse_hex_color(&strata.void_color),
+            axis_color: parse_hex_color(&strata.axis_color),
+            aether_void_color: parse_hex_color(&scene.aether.void_color),
             floor_half,
-            light_position: scene.light_position,
-            grid_spacing: scene.grid_spacing,
-            grid_depth: scene.grid_depth,
-            grid_width: scene.grid_width,
-            enable_shadows: scene.enable_shadows,
+            light_position: strata.light_position,
+            grid_spacing: strata.grid_spacing,
+            grid_depth: strata.grid_depth,
+            grid_width: strata.grid_width,
+            enable_shadows: strata.enable_shadows,
             quads: Vec::new(),
             dmabuf_textures: HashMap::new(),
             main_device_id,
@@ -264,16 +279,26 @@ impl WgpuState {
     }
 
     pub fn apply_scene_config(&mut self, scene: &SceneGraph, display: &Display) {
-        self.grid_color = parse_hex_color(&scene.grid_color);
-        self.void_color = parse_hex_color(&scene.void_color);
-        self.axis_color = parse_hex_color(&scene.axis_color);
+        let strata = &scene.strata;
+        self.scene_mode = scene.scene_mode();
+        self.grid_color = parse_hex_color(&strata.grid_color);
+        self.void_color = parse_hex_color(&strata.void_color);
+        self.axis_color = parse_hex_color(&strata.axis_color);
+        self.aether_void_color = parse_hex_color(&scene.aether.void_color);
         self.floor_half = floor_half_extent(display);
-        self.light_position = scene.light_position;
-        self.grid_spacing = scene.grid_spacing;
-        self.grid_depth = scene.grid_depth;
-        self.grid_width = scene.grid_width;
-        self.enable_shadows = scene.enable_shadows;
-        self.camera.retarget(scene.camera_pitch, self.floor_half);
+        self.light_position = strata.light_position;
+        self.grid_spacing = strata.grid_spacing;
+        self.grid_depth = strata.grid_depth;
+        self.grid_width = strata.grid_width;
+        self.enable_shadows = strata.enable_shadows;
+        mode::frame_camera(
+            self.scene_mode,
+            &mut self.camera,
+            &CameraFraming {
+                camera_pitch: strata.camera_pitch,
+                floor_half: self.floor_half,
+            },
+        );
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -299,8 +324,13 @@ impl WgpuState {
             self.depth_texture_view =
                 depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-            self.camera
-                .set_aspect(new_size.width as f32 / new_size.height as f32);
+            let aspect = new_size.width as f32 / new_size.height as f32;
+            match self.scene_mode {
+                // Strata's framing depends on aspect (near-edge fit); Aether's
+                // straight-on eye/target don't, only its projection does.
+                SceneMode::Strata => self.camera.set_aspect(aspect),
+                SceneMode::Aether => self.camera.aspect = aspect,
+            }
         }
     }
 
@@ -538,6 +568,13 @@ impl WgpuState {
             .unwrap_or_else(|| Matrix4::identity());
         let light_view_proj = light_view_projection(self.light_position, self.floor_half);
 
+        let strata = matches!(self.scene_mode, SceneMode::Strata);
+        let clear = if strata {
+            self.void_color
+        } else {
+            self.aether_void_color
+        };
+
         // Write each quad's own uniform up front so both passes read final values.
         let mut draw_list: Vec<usize> = Vec::new();
         for (_id, (transform, wayland_surface)) in
@@ -569,7 +606,7 @@ impl WgpuState {
 
         // Runs even with no windows, so the map is cleared to 1.0 (unoccluded)
         // every frame rather than sampled stale by the grid.
-        if self.enable_shadows {
+        if strata && self.enable_shadows {
             self.queue.write_buffer(
                 &self.shadow_pipeline.light_uniform_buffer,
                 0,
@@ -607,29 +644,31 @@ impl WgpuState {
             }
         }
 
-        let near_z = self.floor_half[1];
-        let grid_horizon_dist = if self.grid_depth <= 0.0 {
-            1.0e9
-        } else {
-            let far_z = near_z - self.grid_depth * 2.0 * self.floor_half[1];
-            self.camera.eye.z - far_z
-        };
-        self.queue.write_buffer(
-            &self.grid_pipeline.uniform_buffer,
-            0,
-            bytemuck::cast_slice(&[GridUniform {
-                inv_view_proj: inv_view_proj.into(),
-                light_view_proj: light_view_proj.into(),
-                camera_eye: [self.camera.eye.x, self.camera.eye.y, self.camera.eye.z, 1.0],
-                grid_color: self.grid_color,
-                void_color: self.void_color,
-                axis_color: self.axis_color,
-                grid_half_width: self.floor_half[0] * self.grid_width,
-                grid_horizon_dist,
-                grid_spacing: self.grid_spacing,
-                enable_shadows: if self.enable_shadows { 1.0 } else { 0.0 },
-            }]),
-        );
+        if strata {
+            let near_z = self.floor_half[1];
+            let grid_horizon_dist = if self.grid_depth <= 0.0 {
+                1.0e9
+            } else {
+                let far_z = near_z - self.grid_depth * 2.0 * self.floor_half[1];
+                self.camera.eye.z - far_z
+            };
+            self.queue.write_buffer(
+                &self.grid_pipeline.uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[GridUniform {
+                    inv_view_proj: inv_view_proj.into(),
+                    light_view_proj: light_view_proj.into(),
+                    camera_eye: [self.camera.eye.x, self.camera.eye.y, self.camera.eye.z, 1.0],
+                    grid_color: self.grid_color,
+                    void_color: self.void_color,
+                    axis_color: self.axis_color,
+                    grid_half_width: self.floor_half[0] * self.grid_width,
+                    grid_horizon_dist,
+                    grid_spacing: self.grid_spacing,
+                    enable_shadows: if self.enable_shadows { 1.0 } else { 0.0 },
+                }]),
+            );
+        }
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -640,10 +679,10 @@ impl WgpuState {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: self.void_color[0] as f64,
-                            g: self.void_color[1] as f64,
-                            b: self.void_color[2] as f64,
-                            a: self.void_color[3] as f64,
+                            r: clear[0] as f64,
+                            g: clear[1] as f64,
+                            b: clear[2] as f64,
+                            a: clear[3] as f64,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -673,10 +712,12 @@ impl WgpuState {
                 render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
             }
 
-            render_pass.set_pipeline(&self.grid_pipeline.pipeline);
-            render_pass.set_bind_group(0, &self.grid_pipeline.uniform_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.grid_pipeline.shadow_bind_group, &[]);
-            render_pass.draw(0..3, 0..1);
+            if strata {
+                render_pass.set_pipeline(&self.grid_pipeline.pipeline);
+                render_pass.set_bind_group(0, &self.grid_pipeline.uniform_bind_group, &[]);
+                render_pass.set_bind_group(1, &self.grid_pipeline.shadow_bind_group, &[]);
+                render_pass.draw(0..3, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

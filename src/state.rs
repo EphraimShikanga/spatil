@@ -4,12 +4,11 @@ use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::time::Instant;
 
-use cgmath::{Deg, Quaternion, Rotation3};
-
 use crate::config::{Action, KeyCombo, SpatilConfig};
 use crate::renderer::WgpuState;
 use crate::scene::WORLD_SCALE;
 use crate::scene::components::{Transform, WaylandSurface};
+use crate::scene::mode::default_transform;
 use smithay::backend::allocator::{Format, Fourcc};
 use smithay::input::keyboard::XkbConfig;
 use smithay::input::{Seat, SeatState};
@@ -271,16 +270,23 @@ impl SpatilState {
         self.output.change_current_state(Some(mode), None, None, None);
         self.output.set_preferred(mode);
 
+        let old_mode = self.wgpu_state.scene_mode;
         self.wgpu_state
             .apply_scene_config(&config.scene_graph, &config.display);
+        let new_mode = config.scene_graph.scene_mode();
 
-        // Re-tilt already-open windows; the spawn-time rotation is otherwise
-        // fixed, so a live window_pitch change would only reach new windows.
-        let rotation = Quaternion::from_angle_x(Deg(-config.scene_graph.window_pitch));
-        for (_entity, (transform, _surface)) in
+        // Re-apply the mode's spawn transform to already-open windows so live
+        // pitch/mode edits reach them. Same-mode reloads only re-apply rotation
+        // (preserving IPC-set positions); a mode switch also relayouts. Scale is
+        // always preserved -- it comes from the committed buffer, not the config.
+        for (_entity, (transform, surface)) in
             self.world.query_mut::<(&mut Transform, &WaylandSurface)>()
         {
-            transform.rotation = rotation;
+            let target = default_transform(new_mode, surface.window_id, &config.scene_graph);
+            transform.rotation = target.rotation;
+            if old_mode != new_mode {
+                transform.translation = target.translation;
+            }
         }
 
         self.config = config;

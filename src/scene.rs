@@ -1,4 +1,5 @@
 pub mod components;
+pub mod mode;
 pub mod systems;
 
 /// Pixels per world unit, shared by window and floor sizing.
