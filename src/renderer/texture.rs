@@ -3,16 +3,13 @@ use wgpu::util::DeviceExt;
 
 use crate::renderer::pipeline::QuadUniform;
 
-/// A committed surface's pixel buffer uploaded to the GPU, plus the per-quad
-/// state needed to draw it: its own uniform buffer (holding the combined
-/// camera * model matrix for this frame) and a bind group referencing that
-/// buffer, the texture view, and a sampler.
+/// A committed surface's texture plus its per-quad uniform buffer and bind
+/// groups (color pass at `@group(0)`, shadow pass at `@group(1)`).
 pub struct TexturedQuad {
     pub texture: wgpu::Texture,
     pub bind_group: wgpu::BindGroup,
+    pub shadow_bind_group: wgpu::BindGroup,
     pub uniform_buffer: wgpu::Buffer,
-    /// Pixel dimensions of the source buffer, used to preserve aspect ratio
-    /// when placing the quad in the scene.
     pub width: u32,
     pub height: u32,
     pub uv_scale: [f32; 2],
@@ -23,6 +20,7 @@ impl TexturedQuad {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bind_group_layout: &wgpu::BindGroupLayout,
+        shadow_quad_layout: &wgpu::BindGroupLayout,
         width: u32,
         height: u32,
         stride: u32,
@@ -79,6 +77,7 @@ impl TexturedQuad {
         Self::assemble(
             device,
             bind_group_layout,
+            shadow_quad_layout,
             texture,
             width,
             height,
@@ -86,25 +85,31 @@ impl TexturedQuad {
         )
     }
 
-    /// Builds a quad around an already-created texture (the zero-copy dmabuf
-    /// path, the pixels live in GPU memory the client rendered into; no
-    /// upload happens here).
+    /// Wraps an already-created texture (the zero-copy dmabuf path); no upload.
     pub fn from_wgpu_texture(
         device: &wgpu::Device,
         bind_group_layout: &wgpu::BindGroupLayout,
+        shadow_quad_layout: &wgpu::BindGroupLayout,
         texture: wgpu::Texture,
         width: u32,
         height: u32,
         uv_scale: [f32; 2],
     ) -> Self {
-        Self::assemble(device, bind_group_layout, texture, width, height, uv_scale)
+        Self::assemble(
+            device,
+            bind_group_layout,
+            shadow_quad_layout,
+            texture,
+            width,
+            height,
+            uv_scale,
+        )
     }
 
-    /// Shared tail of both constructors: view, sampler, per-quad uniform
-    /// buffer, and the bind group tying them together.
     fn assemble(
         device: &wgpu::Device,
         bind_group_layout: &wgpu::BindGroupLayout,
+        shadow_quad_layout: &wgpu::BindGroupLayout,
         texture: wgpu::Texture,
         width: u32,
         height: u32,
@@ -122,6 +127,7 @@ impl TexturedQuad {
             label: Some("quad uniform buffer"),
             contents: bytemuck::cast_slice(&[QuadUniform {
                 mvp: cgmath::Matrix4::identity().into(),
+                model: cgmath::Matrix4::identity().into(),
                 uv_scale,
                 _padding: [0.0; 2],
             }]),
@@ -147,9 +153,19 @@ impl TexturedQuad {
             ],
         });
 
+        let shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("quad shadow bind group"),
+            layout: shadow_quad_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
         Self {
             texture,
             bind_group,
+            shadow_bind_group,
             uniform_buffer,
             width,
             height,

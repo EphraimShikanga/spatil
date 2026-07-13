@@ -41,6 +41,24 @@ default_height = 600
 # connected the window is revealed immediately, ignoring this value.
 map_timeout_ms = 80
 
+# The 3D environment ("Strata"). Windows float above a bounded grid floor, lit
+# by a single directional light. Colors, camera/window angles, and the light
+# position hot-reload on save — no restart needed — so you can tune the look
+# live. Colors are #RRGGBB or #RRGGBBAA (sRGB, as a color picker reports them).
+[scene_graph]
+enable_shadows = true       # windows cast shadows onto the grid floor
+camera_pitch = -15.0        # degrees the camera looks down at the floor (shallower = more hallway, steeper = more top-down)
+window_pitch = 30.0         # degrees each window reclines back toward the camera
+window_hover_height = 0.5   # height above the floor windows hover at (world units)
+light_position = [-5.0, 10.0, 5.0]  # world-space (X, Y, Z) of the light
+grid_color = "#1E2D2F"      # grid-line color
+void_color = "#0A0A0C"      # empty-space color beyond the floor
+axis_color = "#4A6E72"      # brighter, thicker center-axis cross (x=0 / z=0)
+grid_spacing = 0.05         # world-space distance between grid lines (smaller = finer boxes)
+grid_depth = 1.5            # distance to the horizon (grid fades to void), x on-screen depth; 0 = infinite
+grid_width = 1.25           # grid half-width, x on-screen width; >1 spills past the screen edges
+shadow_map_size = 2048      # shadow map resolution in px (square); restart to change
+
 # Autostart: commands run once when Spatil starts, via `sh -c`. The working
 # directory is this config dir, so a relative path like "hooks/auto_place.py"
 # resolves to ~/.config/spatil/hooks/auto_place.py (scripts must be executable).

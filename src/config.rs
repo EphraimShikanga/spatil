@@ -20,6 +20,7 @@ pub struct SpatilConfig {
     pub display: Display,
     pub keyboard: Keyboard,
     pub windows: Windows,
+    pub scene_graph: SceneGraph,
     pub autostart: Autostart,
     pub keybindings: HashMap<String, String>,
 }
@@ -58,11 +59,74 @@ pub struct Windows {
     pub map_timeout_ms: u64,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SceneGraph {
+    pub enable_shadows: bool,
+    pub camera_pitch: f32,
+    pub window_pitch: f32,
+    pub window_hover_height: f32,
+    pub light_position: [f32; 3],
+    pub grid_color: String,
+    pub void_color: String,
+    pub axis_color: String,
+    pub grid_spacing: f32,
+    pub grid_depth: f32,
+    pub grid_width: f32,
+    pub shadow_map_size: u32,
+}
+
+impl Default for SceneGraph {
+    fn default() -> Self {
+        Self {
+            enable_shadows: true,
+            camera_pitch: -15.0,
+            window_pitch: 15.0,
+            window_hover_height: 0.5,
+            light_position: [-5.0, 10.0, 5.0],
+            grid_color: "#1E2D2F".to_string(),
+            void_color: "#0A0A0C".to_string(),
+            axis_color: "#4A6E72".to_string(),
+            grid_spacing: 0.05,
+            grid_depth: 1.5,
+            grid_width: 1.25,
+            shadow_map_size: 2048,
+        }
+    }
+}
+
+/// Parses `#RRGGBB` / `#RRGGBBAA` into linear-space RGBA; invalid input yields
+/// opaque black. The bytes are treated as sRGB and decoded for the sRGB swapchain.
+pub fn parse_hex_color(hex: &str) -> [f32; 4] {
+    fn srgb_to_linear(c: f32) -> f32 {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    let h = hex.trim().trim_start_matches('#');
+    let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok().map(|v| v as f32 / 255.0);
+    let (r, g, b, a) = match h.len() {
+        6 => (byte(0), byte(2), byte(4), Some(1.0)),
+        8 => (byte(0), byte(2), byte(4), byte(6)),
+        _ => (None, None, None, None),
+    };
+    match (r, g, b, a) {
+        (Some(r), Some(g), Some(b), Some(a)) => {
+            [srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b), a]
+        }
+        _ => {
+            tracing::warn!("invalid hex color {hex:?}; falling back to black");
+            [0.0, 0.0, 0.0, 1.0]
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Autostart {
-    /// Commands run once at startup via `sh -c`, with the working directory set
-    /// to the config dir (so `hooks/foo.py` resolves there). Fire-and-forget.
+    /// Commands run once at startup via `sh -c`
     pub exec: Vec<String>,
 }
 
@@ -112,6 +176,7 @@ impl Default for SpatilConfig {
             display: Display::default(),
             keyboard: Keyboard::default(),
             windows: Windows::default(),
+            scene_graph: SceneGraph::default(),
             autostart: Autostart::default(),
             keybindings: default_keybindings(),
         }
@@ -229,6 +294,20 @@ mod tests {
         assert_eq!(cfg.keybindings["Super+e"], "exec foo");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_hex_color_decodes_and_linearizes() {
+        // Pure black/white survive sRGB→linear exactly.
+        assert_eq!(parse_hex_color("#000000"), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(parse_hex_color("#ffffff"), [1.0, 1.0, 1.0, 1.0]);
+        // 8-digit form carries a straight (non-linearized) alpha.
+        assert_eq!(parse_hex_color("#00000080")[3], 128.0 / 255.0);
+        // A mid-gray must decode darker in linear space than its sRGB fraction.
+        let g = parse_hex_color("#808080")[0];
+        assert!(g > 0.0 && g < 0.5, "expected linearized gray, got {g}");
+        // Garbage degrades to opaque black, never panics.
+        assert_eq!(parse_hex_color("nope"), [0.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]

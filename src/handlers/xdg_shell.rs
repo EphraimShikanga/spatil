@@ -7,6 +7,8 @@ use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
 
+use cgmath::{Deg, Quaternion, Rotation3};
+
 use crate::state::SpatilState;
 use crate::scene::components::{Transform, WaylandSurface};
 use crate::scene::systems::default_window_placement;
@@ -33,12 +35,11 @@ impl XdgShellHandler for SpatilState {
         // registry, not a 2D stacking structure the 3D scene graph will absorb it.
         self.toplevels.push(surface.clone());
 
-        // Spawns hidden (map-postponement); revealed once committed + placed.
-        // Give it a distinct default position so windows don't stack at the
-        // origin (and get depth-culled); a hook can override via move_cluster.
         let window_id = self.next_window_id();
+        let scene = &self.config.scene_graph;
         let transform = Transform {
-            translation: default_window_placement(window_id),
+            translation: default_window_placement(window_id, scene.window_hover_height),
+            rotation: Quaternion::from_angle_x(Deg(-scene.window_pitch)),
             ..Transform::default()
         };
         self.world.spawn((

@@ -1,11 +1,10 @@
-//! Pointer: raw `winit` cursor/button/wheel events → the seat's `wl_pointer`.
-
 use smithay::backend::input::{Axis, AxisSource, ButtonState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
-use smithay::utils::{Logical, Point, SERIAL_COUNTER};
+use smithay::utils::SERIAL_COUNTER;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 
+use crate::input::raycast::raycast_surface;
 use crate::state::SpatilState;
 
 impl SpatilState {
@@ -14,11 +13,7 @@ impl SpatilState {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        // Focus origin at (0,0): the surface-local coord equals the pointer
-        // location (see the coordinate note in this module's `mod.rs`).
-        let focus = self
-            .focus_surface()
-            .map(|s| (s, Point::<f64, Logical>::from((0.0, 0.0))));
+        let focus = raycast_surface(self, self.pointer_location);
         let location = self.pointer_location;
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.input_time();
@@ -30,8 +25,6 @@ impl SpatilState {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        // Button codes as defined in linux/input-event-codes.h (BTN_*), matching
-        // Smithay's own winit backend mapping.
         let button_code = match button {
             MouseButton::Left => 0x110,
             MouseButton::Right => 0x111,
@@ -47,11 +40,11 @@ impl SpatilState {
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.input_time();
 
-        // Click-to-focus: on press, give the pointed-at window keyboard focus.
+        // Click-to-focus
         if button_state == ButtonState::Pressed
             && let Some(keyboard) = self.seat.get_keyboard()
         {
-            let focus = self.focus_surface();
+            let focus = raycast_surface(self, self.pointer_location).map(|(surface, _)| surface);
             keyboard.set_focus(self, focus, serial);
         }
 
@@ -72,8 +65,6 @@ impl SpatilState {
             return;
         };
         let time = self.input_time();
-        // Sign/scaling mirror Smithay's own winit backend: a wheel notch is 120
-        // v120 units; pixel deltas are passed through negated.
         let frame = match delta {
             MouseScrollDelta::LineDelta(x, y) => {
                 let mut frame = AxisFrame::new(time).source(AxisSource::Wheel);

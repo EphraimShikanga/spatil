@@ -4,9 +4,12 @@ use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::time::Instant;
 
+use cgmath::{Deg, Quaternion, Rotation3};
+
 use crate::config::{Action, KeyCombo, SpatilConfig};
 use crate::renderer::WgpuState;
-use crate::scene::components::WaylandSurface;
+use crate::scene::WORLD_SCALE;
+use crate::scene::components::{Transform, WaylandSurface};
 use smithay::backend::allocator::{Format, Fourcc};
 use smithay::input::keyboard::XkbConfig;
 use smithay::input::{Seat, SeatState};
@@ -42,38 +45,17 @@ pub struct SpatilState {
     pub xdg_activation_state: XdgActivationState,
     pub output_manager_state: OutputManagerState,
     pub dmabuf_state: DmabufState,
-    /// Handle to the `zwp_linux_dmabuf_v1` global, if the wgpu device supports
-    /// Vulkan dmabuf import. `None` means SHM-only mode: the global is never
-    /// advertised, so clients won't try hardware buffers we can't accept.
     pub dmabuf_global: Option<DmabufGlobal>,
-    /// Registry of live toplevel windows, for lookup by `WlSurface`.
-    ///
-    /// This is deliberately NOT `smithay::desktop::Space`/`Window`: it carries no
-    /// 2D stacking/layout semantics. It's a flat "which toplevels exist" list that
-    /// the 3D scene graph will eventually absorb once scene nodes exist.
     pub toplevels: Vec<ToplevelSurface>,
-    /// Seat with a keyboard and pointer added, so real clients receive input.
-    /// Winit window events are translated into smithay input calls in
-    /// `src/input.rs`. Touch is intentionally left out for now.
     pub seat_state: SeatState<SpatilState>,
     pub seat: Seat<SpatilState>,
-    /// Current pointer position, in the compositor's logical space. Tracked so
-    /// button/axis events can reuse the last motion location.
     pub pointer_location: Point<f64, Logical>,
-    /// The single virtual output. Stored so per-frame code (frame callbacks,
-    /// future scanout tracking) can reference it;
     pub output: Output,
-    /// Monotonic clock, started at compositor boot. Used to compute the
-    /// millisecond timestamps `wl_callback::done` events require.
     pub start_time: std::time::Instant,
     pub world: hecs::World,
     pub config: SpatilConfig,
-    /// `config.keybindings` compiled into matchable combos; rebuilt on reload.
     pub keybindings: HashMap<KeyCombo, Action>,
-    /// Write-side clones of connected scripts' sockets, for event broadcasts;
-    /// read sides live in calloop sources. Pruned lazily on failed writes.
     pub ipc_clients: Vec<UnixStream>,
-    /// Set by the `quit` action; polled in `main.rs` to exit the winit loop.
     pub should_quit: bool,
     window_id_counter: u32,
 }
@@ -230,10 +212,6 @@ impl SpatilState {
         id
     }
 
-    /// Launches every `[autostart] exec` entry once via `sh -c`, cwd'd to the
-    /// config dir so relative paths like `hooks/foo.py` resolve. Fire-and-forget
-    /// (children auto-reaped via `SIGCHLD`); they inherit `WAYLAND_DISPLAY` and
-    /// `SPATIL_SOCKET` from our env.
     pub fn run_autostart(&self) {
         let config_dir = SpatilConfig::config_dir();
         for entry in &self.config.autostart.exec {
@@ -249,9 +227,6 @@ impl SpatilState {
         }
     }
 
-    /// Starts the map-postponement clock on the first buffer commit for
-    /// `surface_id`, returning the window id once so the caller broadcasts
-    /// `window_committed`. `None` on later commits or untracked surfaces.
     pub fn mark_committed(&mut self, surface_id: &ObjectId) -> Option<u32> {
         for (_entity, surface) in self.world.query_mut::<&mut WaylandSurface>() {
             if &surface.id == surface_id && surface.committed_at.is_none() {
@@ -262,9 +237,18 @@ impl SpatilState {
         None
     }
 
-    /// Hot-reload: re-applies what can change at runtime (keybindings, keyboard
-    /// repeat + layout, output mode). Socket path and default window size only
-    /// take effect on restart.
+    pub fn set_window_size(&mut self, surface_id: &ObjectId, width: u32, height: u32) {
+        for (_entity, (transform, surface)) in
+            self.world.query_mut::<(&mut Transform, &WaylandSurface)>()
+        {
+            if &surface.id == surface_id {
+                transform.scale.x = width as f32 / WORLD_SCALE;
+                transform.scale.y = height as f32 / WORLD_SCALE;
+                return;
+            }
+        }
+    }
+
     pub fn apply_config(&mut self, config: SpatilConfig) {
         self.keybindings = config.compile_keybindings();
 
@@ -286,6 +270,18 @@ impl SpatilState {
         };
         self.output.change_current_state(Some(mode), None, None, None);
         self.output.set_preferred(mode);
+
+        self.wgpu_state
+            .apply_scene_config(&config.scene_graph, &config.display);
+
+        // Re-tilt already-open windows; the spawn-time rotation is otherwise
+        // fixed, so a live window_pitch change would only reach new windows.
+        let rotation = Quaternion::from_angle_x(Deg(-config.scene_graph.window_pitch));
+        for (_entity, (transform, _surface)) in
+            self.world.query_mut::<(&mut Transform, &WaylandSurface)>()
+        {
+            transform.rotation = rotation;
+        }
 
         self.config = config;
         tracing::info!("configuration reloaded");

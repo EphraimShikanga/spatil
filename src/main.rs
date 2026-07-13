@@ -39,7 +39,7 @@ impl ApplicationHandler for SpatilApp {
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
             self.window = Some(window.clone());
 
-            let wgpu_state = pollster::block_on(WgpuState::new(window));
+            let wgpu_state = pollster::block_on(WgpuState::new(window, &self.config));
 
             let state = SpatilState::new(
                 self.display_handle.clone(),

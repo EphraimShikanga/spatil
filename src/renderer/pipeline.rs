@@ -4,16 +4,13 @@ use wgpu::util::DeviceExt;
 
 /// cgmath/OpenGL produce clip-space depth in [-1, 1]; wgpu expects [0, 1].
 #[rustfmt::skip]
-const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
+pub const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
     1.0, 0.0, 0.0, 0.0,
     0.0, 1.0, 0.0, 0.0,
     0.0, 0.0, 0.5, 0.0,
     0.0, 0.0, 0.5, 1.0,
 );
 
-/// A single static camera for the first textured-quad milestone. Not the
-/// eventual scene-graph camera — this is intentionally the simplest real
-/// view-projection transform that proves a 3D camera pipeline works.
 pub struct Camera {
     pub eye: Point3<f32>,
     pub target: Point3<f32>,
@@ -22,19 +19,49 @@ pub struct Camera {
     pub fovy: f32,
     pub znear: f32,
     pub zfar: f32,
+    pitch_degrees: f32,
+    floor_half: [f32; 2],
 }
 
 impl Camera {
-    pub fn new(aspect: f32) -> Self {
-        Self {
+    pub fn new(aspect: f32, pitch_degrees: f32, floor_half: [f32; 2]) -> Self {
+        let mut camera = Self {
             eye: Point3::new(0.0, 0.0, 5.0),
             target: Point3::new(0.0, 0.0, 0.0),
-            up: Vector3::new(0.0, 1.0, 0.0),
+            up: Vector3::unit_y(),
             aspect,
             fovy: 45.0,
             znear: 0.1,
             zfar: 100.0,
-        }
+            pitch_degrees,
+            floor_half,
+        };
+        camera.retarget(pitch_degrees, floor_half);
+        camera
+    }
+
+    pub fn set_aspect(&mut self, aspect: f32) {
+        self.aspect = aspect;
+        self.retarget(self.pitch_degrees, self.floor_half);
+    }
+
+    pub fn retarget(&mut self, pitch_degrees: f32, floor_half: [f32; 2]) {
+        self.pitch_degrees = pitch_degrees;
+        self.floor_half = floor_half;
+
+        let half_fovy = 0.5 * self.fovy.to_radians();
+        let pitch = pitch_degrees.abs().clamp(1.0, 60.0).to_radians();
+        let bottom = pitch + half_fovy;
+
+        let tan_half_fovx = self.aspect * half_fovy.tan();
+        let axial = floor_half[0] / tan_half_fovx;
+        let height = axial * bottom.sin() / half_fovy.cos();
+        let back = height / bottom.tan();
+
+        self.eye = Point3::new(0.0, height, floor_half[1] + back);
+        let forward = Vector3::new(0.0, -pitch.sin(), -pitch.cos());
+        self.target = self.eye + forward;
+        self.up = Vector3::unit_y();
     }
 
     pub fn build_view_projection_matrix(&self) -> Matrix4<f32> {
@@ -42,12 +69,18 @@ impl Camera {
         let proj = cgmath::perspective(Deg(self.fovy), self.aspect, self.znear, self.zfar);
         OPENGL_TO_WGPU_MATRIX * proj * view
     }
+
+    pub fn build_inverse_view_projection_matrix(&self) -> Option<Matrix4<f32>> {
+        use cgmath::SquareMatrix;
+        self.build_view_projection_matrix().invert()
+    }
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct QuadUniform {
     pub mvp: [[f32; 4]; 4],
+    pub model: [[f32; 4]; 4],
     pub uv_scale: [f32; 2],
     pub _padding: [f32; 2],
 }
@@ -93,9 +126,6 @@ const QUAD_VERTICES: &[Vertex] = &[
 ];
 const QUAD_INDICES: &[u16] = &[0, 1, 2, 0, 2, 3];
 
-/// The shared quad geometry and pipeline every committed surface is drawn
-/// with. Each surface only owns its own texture + per-quad uniform buffer
-/// (see `renderer::texture::TexturedQuad`).
 pub struct QuadPipeline {
     pub pipeline: wgpu::RenderPipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,

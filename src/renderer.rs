@@ -1,9 +1,12 @@
-pub mod background;
+pub mod grid;
 pub mod pipeline;
+pub mod shadow;
 pub mod texture;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use cgmath::{Matrix4, Point3, SquareMatrix, Vector3};
 use wgpu::{Device, Queue, Surface, SurfaceConfiguration};
 use winit::window::Window;
 
@@ -11,11 +14,33 @@ use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer as _, Fourcc, Modifier};
 use smithay::reexports::wayland_server::backend::ObjectId;
 
-use pipeline::{Camera, QuadPipeline, QuadUniform};
-use texture::TexturedQuad;
-
+use crate::config::{Display, SceneGraph, SpatilConfig, parse_hex_color};
+use crate::scene::WORLD_SCALE;
 use crate::scene::components::{Transform, WaylandSurface};
 use crate::scene::systems::update_world_matrices;
+
+use grid::{GridPipeline, GridUniform};
+use pipeline::{Camera, OPENGL_TO_WGPU_MATRIX, QuadPipeline, QuadUniform};
+use shadow::{LightUniform, ShadowMap, ShadowPipeline};
+use texture::TexturedQuad;
+
+fn floor_half_extent(display: &Display) -> [f32; 2] {
+    [
+        display.width as f32 / WORLD_SCALE / 2.0,
+        display.height as f32 / WORLD_SCALE / 2.0,
+    ]
+}
+
+/// Orthographic light view-projection, sized to cover the floor plus a margin
+/// for windows hovering above and beyond its edges.
+fn light_view_projection(light_position: [f32; 3], floor_half: [f32; 2]) -> Matrix4<f32> {
+    let eye = Point3::new(light_position[0], light_position[1], light_position[2]);
+    let target = Point3::new(0.0, 0.0, 0.0);
+    let view = Matrix4::look_at_rh(eye, target, Vector3::unit_y());
+    let radius = floor_half[0].max(floor_half[1]) + 3.0;
+    let proj = cgmath::ortho(-radius, radius, -radius, radius, 0.1, 30.0);
+    OPENGL_TO_WGPU_MATRIX * proj * view
+}
 
 pub struct WgpuState {
     pub surface: Surface<'static>,
@@ -24,32 +49,26 @@ pub struct WgpuState {
     pub config: SurfaceConfiguration,
     pub depth_texture_view: wgpu::TextureView,
     pub quad_pipeline: QuadPipeline,
-    pub background_pipeline: background::BackgroundPipeline,
+    pub grid_pipeline: GridPipeline,
+    pub shadow_pipeline: ShadowPipeline,
+    pub shadow_map: ShadowMap,
     pub camera: Camera,
-    /// Live textured quads, one per committed toplevel surface, keyed by the
-    /// surface's Wayland object id. A `Vec` rather than a `HashMap` so draw
-    /// order (and therefore placeholder placement) is deterministic.
+    pub grid_color: [f32; 4],
+    pub void_color: [f32; 4],
+    pub axis_color: [f32; 4],
+    pub floor_half: [f32; 2],
+    pub light_position: [f32; 3],
+    pub grid_spacing: f32,
+    pub grid_depth: f32,
+    pub grid_width: f32,
+    pub enable_shadows: bool,
     pub quads: Vec<(ObjectId, TexturedQuad)>,
-    /// Zero-copy dmabuf textures, keyed by the `wl_buffer`'s object id. Import
-    /// happens once per buffer (in `DmabufHandler::dmabuf_imported`), not per
-    /// commit -- commits just look the texture up here and attach it to the
-    /// committing surface's quad.
     pub dmabuf_textures: HashMap<ObjectId, (wgpu::Texture, u32, u32, [f32; 2])>,
-    /// The DRM render node (`dev_t`) of the adapter's GPU, queried via
-    /// `VK_EXT_physical_device_drm`. Mesa clients need this advertised through
-    /// dmabuf v4 feedback (`main_device`) to pick the right GPU for their EGL
-    /// context; without it their hardware path fails ("fd -1") and they fall
-    /// back to software rendering. `None` if the driver can't report it.
     pub main_device_id: Option<u64>,
     pub dmabuf_modifiers: Vec<Modifier>,
-    /// Set when `get_current_texture()` returned `Suboptimal`; reconfigured
-    /// right after presenting the current (still-valid) frame.
     needs_reconfigure: bool,
 }
 
-/// Queries the DRM render node device id (`dev_t`) of the adapter's physical
-/// device via `VK_EXT_physical_device_drm`. Advertised to clients as dmabuf
-/// v4 feedback's `main_device` so Mesa knows which GPU to allocate on.
 fn query_render_node_dev_t(adapter: &wgpu::Adapter) -> Option<u64> {
     // SAFETY: read-only property queries against the adapter's physical
     // device; the `as_hal` guard is dropped before returning.
@@ -91,19 +110,14 @@ fn query_render_node_dev_t(adapter: &wgpu::Adapter) -> Option<u64> {
     }
 }
 
-/// Result of a `WgpuState::render()` call, for the caller to act on.
 pub enum RenderOutcome {
-    /// A frame was drawn and presented.
     Rendered,
-    /// No frame was presented this pass (occluded/timeout/outdated/etc.) --
-    /// not an error, just try again next frame.
     Skipped,
-    /// The surface was lost and needs a full `resize()` to recreate it.
     Lost,
 }
 
 impl WgpuState {
-    pub async fn new(window: Arc<Window>) -> Self {
+    pub async fn new(window: Arc<Window>, config: &SpatilConfig) -> Self {
         let size = window.inner_size();
 
         // Forced to Vulkan (not `Backends::PRIMARY`): dmabuf zero-copy import
@@ -163,7 +177,7 @@ impl WgpuState {
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
 
-        let config = wgpu::SurfaceConfiguration {
+        let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             color_space: wgpu::SurfaceColorSpace::Auto,
@@ -174,13 +188,13 @@ impl WgpuState {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-        surface.configure(&device, &config);
+        surface.configure(&device, &surface_config);
 
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Depth Texture"),
             size: wgpu::Extent3d {
-                width: config.width.max(1),
-                height: config.height.max(1),
+                width: surface_config.width.max(1),
+                height: surface_config.height.max(1),
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -192,9 +206,18 @@ impl WgpuState {
         });
         let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let quad_pipeline = QuadPipeline::new(&device, config.format);
-        let background_pipeline = background::BackgroundPipeline::new(&device, config.format);
-        let camera = Camera::new(config.width as f32 / config.height as f32);
+        let scene = &config.scene_graph;
+        let floor_half = floor_half_extent(&config.display);
+
+        let quad_pipeline = QuadPipeline::new(&device, surface_config.format);
+        let shadow_pipeline = ShadowPipeline::new(&device);
+        let shadow_map = ShadowMap::new(&device, scene.shadow_map_size);
+        let grid_pipeline = GridPipeline::new(&device, surface_config.format, &shadow_map);
+        let camera = Camera::new(
+            surface_config.width as f32 / surface_config.height as f32,
+            scene.camera_pitch,
+            floor_half,
+        );
 
         let render_node = query_render_node_dev_t(&adapter);
         let dmabuf_modifiers = query_dmabuf_modifiers(&adapter);
@@ -216,17 +239,41 @@ impl WgpuState {
             surface,
             device,
             queue,
-            config,
+            config: surface_config,
             depth_texture_view,
             quad_pipeline,
-            background_pipeline,
+            grid_pipeline,
+            shadow_pipeline,
+            shadow_map,
             camera,
+            grid_color: parse_hex_color(&scene.grid_color),
+            void_color: parse_hex_color(&scene.void_color),
+            axis_color: parse_hex_color(&scene.axis_color),
+            floor_half,
+            light_position: scene.light_position,
+            grid_spacing: scene.grid_spacing,
+            grid_depth: scene.grid_depth,
+            grid_width: scene.grid_width,
+            enable_shadows: scene.enable_shadows,
             quads: Vec::new(),
             dmabuf_textures: HashMap::new(),
             main_device_id,
             dmabuf_modifiers,
             needs_reconfigure: false,
         }
+    }
+
+    pub fn apply_scene_config(&mut self, scene: &SceneGraph, display: &Display) {
+        self.grid_color = parse_hex_color(&scene.grid_color);
+        self.void_color = parse_hex_color(&scene.void_color);
+        self.axis_color = parse_hex_color(&scene.axis_color);
+        self.floor_half = floor_half_extent(display);
+        self.light_position = scene.light_position;
+        self.grid_spacing = scene.grid_spacing;
+        self.grid_depth = scene.grid_depth;
+        self.grid_width = scene.grid_width;
+        self.enable_shadows = scene.enable_shadows;
+        self.camera.retarget(scene.camera_pitch, self.floor_half);
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -252,7 +299,8 @@ impl WgpuState {
             self.depth_texture_view =
                 depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-            self.camera.aspect = new_size.width as f32 / new_size.height as f32;
+            self.camera
+                .set_aspect(new_size.width as f32 / new_size.height as f32);
         }
     }
 
@@ -270,6 +318,7 @@ impl WgpuState {
             &self.device,
             &self.queue,
             &self.quad_pipeline.bind_group_layout,
+            &self.shadow_pipeline.quad_bind_group_layout,
             width,
             height,
             stride,
@@ -411,6 +460,7 @@ impl WgpuState {
         let quad = TexturedQuad::from_wgpu_texture(
             &self.device,
             &self.quad_pipeline.bind_group_layout,
+            &self.shadow_pipeline.quad_bind_group_layout,
             texture.clone(),
             *width,
             *height,
@@ -481,6 +531,106 @@ impl WgpuState {
                 label: Some("Render Encoder"),
             });
 
+        let view_proj = self.camera.build_view_projection_matrix();
+        let inv_view_proj = self
+            .camera
+            .build_inverse_view_projection_matrix()
+            .unwrap_or_else(|| Matrix4::identity());
+        let light_view_proj = light_view_projection(self.light_position, self.floor_half);
+
+        // Write each quad's own uniform up front so both passes read final values.
+        let mut draw_list: Vec<usize> = Vec::new();
+        for (_id, (transform, wayland_surface)) in
+            world.query::<(&Transform, &WaylandSurface)>().iter()
+        {
+            if !wayland_surface.visible {
+                continue;
+            }
+            if let Some(idx) = self
+                .quads
+                .iter()
+                .position(|(qid, _)| *qid == wayland_surface.id)
+            {
+                let model = transform.world_matrix;
+                let quad = &self.quads[idx].1;
+                self.queue.write_buffer(
+                    &quad.uniform_buffer,
+                    0,
+                    bytemuck::cast_slice(&[QuadUniform {
+                        mvp: (view_proj * model).into(),
+                        model: model.into(),
+                        uv_scale: quad.uv_scale,
+                        _padding: [0.0; 2],
+                    }]),
+                );
+                draw_list.push(idx);
+            }
+        }
+
+        // Runs even with no windows, so the map is cleared to 1.0 (unoccluded)
+        // every frame rather than sampled stale by the grid.
+        if self.enable_shadows {
+            self.queue.write_buffer(
+                &self.shadow_pipeline.light_uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[LightUniform {
+                    view_proj: light_view_proj.into(),
+                }]),
+            );
+
+            let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Shadow Pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.shadow_map.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            shadow_pass.set_pipeline(&self.shadow_pipeline.pipeline);
+            shadow_pass.set_bind_group(0, &self.shadow_pipeline.light_bind_group, &[]);
+            shadow_pass.set_vertex_buffer(0, self.quad_pipeline.vertex_buffer.slice(..));
+            shadow_pass.set_index_buffer(
+                self.quad_pipeline.index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
+            for &idx in &draw_list {
+                let quad = &self.quads[idx].1;
+                shadow_pass.set_bind_group(1, &quad.shadow_bind_group, &[]);
+                shadow_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
+            }
+        }
+
+        let near_z = self.floor_half[1];
+        let grid_horizon_dist = if self.grid_depth <= 0.0 {
+            1.0e9
+        } else {
+            let far_z = near_z - self.grid_depth * 2.0 * self.floor_half[1];
+            self.camera.eye.z - far_z
+        };
+        self.queue.write_buffer(
+            &self.grid_pipeline.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[GridUniform {
+                inv_view_proj: inv_view_proj.into(),
+                light_view_proj: light_view_proj.into(),
+                camera_eye: [self.camera.eye.x, self.camera.eye.y, self.camera.eye.z, 1.0],
+                grid_color: self.grid_color,
+                void_color: self.void_color,
+                axis_color: self.axis_color,
+                grid_half_width: self.floor_half[0] * self.grid_width,
+                grid_horizon_dist,
+                grid_spacing: self.grid_spacing,
+                enable_shadows: if self.enable_shadows { 1.0 } else { 0.0 },
+            }]),
+        );
+
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -490,10 +640,10 @@ impl WgpuState {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 1.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
+                            r: self.void_color[0] as f64,
+                            g: self.void_color[1] as f64,
+                            b: self.void_color[2] as f64,
+                            a: self.void_color[3] as f64,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -511,52 +661,21 @@ impl WgpuState {
                 multiview_mask: None,
             });
 
-            if !self.quads.is_empty() {
-                // This is to just test the 3d effect by rotating the camera for now
-                static START_TIME: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
-                let time = START_TIME.elapsed().as_secs_f32();
-                self.camera.eye = cgmath::Point3::new(time.sin() * 5.0, 0.0, time.cos() * 5.0);
-                
-                let view_proj = self.camera.build_view_projection_matrix();
-
-                render_pass.set_pipeline(&self.quad_pipeline.pipeline);
-                render_pass.set_vertex_buffer(0, self.quad_pipeline.vertex_buffer.slice(..));
-                render_pass.set_index_buffer(
-                    self.quad_pipeline.index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint16,
-                );
-
-                for (_id, (transform, wayland_surface)) in
-                    world.query_mut::<(&Transform, &WaylandSurface)>()
-                {
-                    // Skip map-postponed windows until they're revealed.
-                    if !wayland_surface.visible {
-                        continue;
-                    }
-                    if let Some((_, quad)) = self
-                        .quads
-                        .iter()
-                        .find(|(qid, _)| *qid == wayland_surface.id)
-                    {
-                        let model = transform.world_matrix;
-                        let mvp: [[f32; 4]; 4] = (view_proj * model).into();
-                        self.queue.write_buffer(
-                            &quad.uniform_buffer,
-                            0,
-                            bytemuck::cast_slice(&[QuadUniform {
-                                mvp,
-                                uv_scale: quad.uv_scale,
-                                _padding: [0.0; 2],
-                            }]),
-                        );
-                        render_pass.set_bind_group(0, &quad.bind_group, &[]);
-                        render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
-                    }
-                }
+            render_pass.set_pipeline(&self.quad_pipeline.pipeline);
+            render_pass.set_vertex_buffer(0, self.quad_pipeline.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(
+                self.quad_pipeline.index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
+            for &idx in &draw_list {
+                let quad = &self.quads[idx].1;
+                render_pass.set_bind_group(0, &quad.bind_group, &[]);
+                render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
             }
 
-            // Draw background last so it fills in any empty space
-            render_pass.set_pipeline(&self.background_pipeline.pipeline);
+            render_pass.set_pipeline(&self.grid_pipeline.pipeline);
+            render_pass.set_bind_group(0, &self.grid_pipeline.uniform_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.grid_pipeline.shadow_bind_group, &[]);
             render_pass.draw(0..3, 0..1);
         }
 
@@ -630,5 +749,28 @@ pub fn query_dmabuf_modifiers(adapter: &wgpu::Adapter) -> Vec<Modifier> {
             modifiers.push(Modifier::Linear);
         }
         modifiers
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    // GPU-free WGSL validation via naga, the same front-end wgpu uses at
+    // pipeline creation, so a shader error fails tests instead of the compositor.
+    fn validate(name: &str, src: &str) {
+        let module = naga::front::wgsl::parse_str(src)
+            .unwrap_or_else(|e| panic!("{name}: WGSL parse error:\n{}", e.emit_to_string(src)));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{name}: WGSL validation error: {e:?}"));
+    }
+
+    #[test]
+    fn shaders_are_valid() {
+        validate("quad.wgsl", include_str!("shaders/quad.wgsl"));
+        validate("grid.wgsl", include_str!("shaders/grid.wgsl"));
+        validate("shadow.wgsl", include_str!("shaders/shadow.wgsl"));
     }
 }

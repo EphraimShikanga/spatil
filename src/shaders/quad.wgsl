@@ -1,5 +1,6 @@
 struct QuadUniform {
     mvp: mat4x4<f32>,
+    model: mat4x4<f32>,
     uv_scale: vec2<f32>,
     _padding: vec2<f32>,
 };

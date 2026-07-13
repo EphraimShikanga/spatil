@@ -4,20 +4,15 @@ use cgmath::Vector3;
 use hecs::World;
 use crate::scene::components::{Transform, Parent, WaylandSurface};
 
-/// A default spawn position for a new window, laid out on a centered grid keyed
-/// by its (monotonic) window id so windows never coincide — without this every
-/// toplevel lands at the origin and the depth test culls all but the first. A
-/// stepping stone until a real layout/placement system lands; an IPC script can
-/// still override it via `move_cluster`.
-pub fn default_window_placement(window_id: u32) -> Vector3<f32> {
-    const COLS: u32 = 4;
-    const SPACING: f32 = 1.4;
+pub fn default_window_placement(window_id: u32, hover_height: f32) -> Vector3<f32> {
+    const COLS: u32 = 3;
+    const SPACING: f32 = 0.9;
     let index = window_id.saturating_sub(1);
     let col = (index % COLS) as f32;
     let row = (index / COLS) as f32;
     let x = (col - (COLS as f32 - 1.0) / 2.0) * SPACING;
-    let y = -row * SPACING;
-    Vector3::new(x, y, 0.0)
+    let z = -row * SPACING;
+    Vector3::new(x, hover_height, z)
 }
 
 /// Reveals committed-but-hidden windows once map-postponement lapses: either no

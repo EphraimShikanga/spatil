@@ -120,6 +120,15 @@ impl CompositorHandler for SpatilState {
             {
                 tracing::warn!(surface_id = ?surface.id(), buffer_id = ?buffer.id(), "commit with a dmabuf buffer that was never imported");
             } else {
+                // Scale the window's quad to the imported buffer's dimensions.
+                let dims = self
+                    .wgpu_state
+                    .dmabuf_textures
+                    .get(&buffer.id())
+                    .map(|(_, w, h, _)| (*w, *h));
+                if let Some((w, h)) = dims {
+                    self.set_window_size(&target_surface_id, w, h);
+                }
                 tracing::trace!(surface_id = ?surface.id(), buffer_id = ?buffer.id(), "attached imported dmabuf texture to toplevel surface");
             }
             return;
@@ -165,12 +174,13 @@ impl CompositorHandler for SpatilState {
                 } else {
                     tracing::info!(surface_id = ?surface.id(), width, height, stride, "uploading SHM texture for toplevel surface");
                     self.wgpu_state.upload_shm_texture(
-                        target_surface_id,
+                        target_surface_id.clone(),
                         width,
                         height,
                         stride,
                         &bytes,
                     );
+                    self.set_window_size(&target_surface_id, width, height);
                 }
             }
             Ok(None) => {
