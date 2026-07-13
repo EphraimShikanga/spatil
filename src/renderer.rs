@@ -529,6 +529,10 @@ impl WgpuState {
                 for (_id, (transform, wayland_surface)) in
                     world.query_mut::<(&Transform, &WaylandSurface)>()
                 {
+                    // Skip map-postponed windows until they're revealed.
+                    if !wayland_surface.visible {
+                        continue;
+                    }
                     if let Some((_, quad)) = self
                         .quads
                         .iter()

@@ -19,7 +19,6 @@ pub struct TexturedQuad {
 }
 
 impl TexturedQuad {
-    /// Builds a quad by uploading raw CPU pixels (the SHM path).
     pub fn from_bytes(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

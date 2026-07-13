@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use cgmath::{Matrix4, Quaternion, Vector3, SquareMatrix, Zero, One};
 use hecs::Entity;
 use smithay::reexports::wayland_server::backend::ObjectId;
@@ -27,6 +29,25 @@ pub struct Velocity {
 
 pub struct WaylandSurface {
     pub id: ObjectId,
+    /// Process-unique id exposed to IPC scripts (the `wl_surface` protocol id is
+    /// only unique per client, so it would collide across apps).
+    pub window_id: u32,
+    /// Map-postponement flag: the renderer skips this surface until it flips
+    /// true, so a script can place it before its first visible frame.
+    pub visible: bool,
+    /// First-buffer-commit time; `None` until then. Drives the reveal timeout.
+    pub committed_at: Option<Instant>,
+}
+
+impl WaylandSurface {
+    pub fn new(id: ObjectId, window_id: u32) -> Self {
+        Self {
+            id,
+            window_id,
+            visible: false,
+            committed_at: None,
+        }
+    }
 }
 
 pub struct Parent {

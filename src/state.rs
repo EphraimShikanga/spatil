@@ -1,12 +1,19 @@
 pub mod client;
 
+use std::collections::HashMap;
+use std::os::unix::net::UnixStream;
+use std::time::Instant;
+
+use crate::config::{Action, KeyCombo, SpatilConfig};
 use crate::renderer::WgpuState;
+use crate::scene::components::WaylandSurface;
 use smithay::backend::allocator::{Format, Fourcc};
 use smithay::input::keyboard::XkbConfig;
 use smithay::input::{Seat, SeatState};
 use smithay::utils::{Logical, Point};
 use smithay::reexports::calloop::{LoopHandle, LoopSignal};
 use smithay::reexports::wayland_server::DisplayHandle;
+use smithay::reexports::wayland_server::backend::ObjectId;
 use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufState};
 use smithay::wayland::output::OutputManagerState;
@@ -54,13 +61,21 @@ pub struct SpatilState {
     /// button/axis events can reuse the last motion location.
     pub pointer_location: Point<f64, Logical>,
     /// The single virtual output. Stored so per-frame code (frame callbacks,
-    /// future scanout tracking) can reference it; previously constructed in
-    /// `new()` and discarded once `create_global` returned.
+    /// future scanout tracking) can reference it;
     pub output: Output,
     /// Monotonic clock, started at compositor boot. Used to compute the
     /// millisecond timestamps `wl_callback::done` events require.
     pub start_time: std::time::Instant,
     pub world: hecs::World,
+    pub config: SpatilConfig,
+    /// `config.keybindings` compiled into matchable combos; rebuilt on reload.
+    pub keybindings: HashMap<KeyCombo, Action>,
+    /// Write-side clones of connected scripts' sockets, for event broadcasts;
+    /// read sides live in calloop sources. Pruned lazily on failed writes.
+    pub ipc_clients: Vec<UnixStream>,
+    /// Set by the `quit` action; polled in `main.rs` to exit the winit loop.
+    pub should_quit: bool,
+    window_id_counter: u32,
 }
 
 impl SpatilState {
@@ -69,6 +84,7 @@ impl SpatilState {
         loop_handle: LoopHandle<'static, SpatilState>,
         loop_signal: LoopSignal,
         wgpu_state: WgpuState,
+        config: SpatilConfig,
     ) -> Self {
         let start_time = std::time::Instant::now();
         let compositor_state = CompositorState::new_v6::<Self>(&display_handle);
@@ -76,10 +92,17 @@ impl SpatilState {
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&display_handle, "seat0");
-        // Add the input devices the seat advertises to clients. `XkbConfig::default()`
-        // respects the usual `XKB_DEFAULT_*` env vars (falling back to "us").
-        seat.add_keyboard(XkbConfig::default(), 200, 25)
-            .expect("failed to initialize the keyboard");
+        let xkb_config = XkbConfig {
+            layout: &config.keyboard.xkb_layout,
+            model: &config.keyboard.xkb_model,
+            ..Default::default()
+        };
+        seat.add_keyboard(
+            xkb_config,
+            config.keyboard.repeat_delay,
+            config.keyboard.repeat_rate,
+        )
+        .expect("failed to initialize the keyboard");
         seat.add_pointer();
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
         let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
@@ -94,8 +117,8 @@ impl SpatilState {
             },
         );
         let mode = Mode {
-            size: (1920, 1080).into(),
-            refresh: 60_000,
+            size: (config.display.width as i32, config.display.height as i32).into(),
+            refresh: config.display.refresh_rate as i32,
         };
         output.change_current_state(
             Some(mode),
@@ -172,6 +195,8 @@ impl SpatilState {
             None
         };
 
+        let keybindings = config.compile_keybindings();
+
         Self {
             display_handle,
             loop_handle,
@@ -191,6 +216,78 @@ impl SpatilState {
             output,
             start_time,
             world: hecs::World::new(),
+            config,
+            keybindings,
+            ipc_clients: Vec::new(),
+            should_quit: false,
+            window_id_counter: 1,
         }
+    }
+
+    pub fn next_window_id(&mut self) -> u32 {
+        let id = self.window_id_counter;
+        self.window_id_counter = self.window_id_counter.wrapping_add(1);
+        id
+    }
+
+    /// Launches every `[autostart] exec` entry once via `sh -c`, cwd'd to the
+    /// config dir so relative paths like `hooks/foo.py` resolve. Fire-and-forget
+    /// (children auto-reaped via `SIGCHLD`); they inherit `WAYLAND_DISPLAY` and
+    /// `SPATIL_SOCKET` from our env.
+    pub fn run_autostart(&self) {
+        let config_dir = SpatilConfig::config_dir();
+        for entry in &self.config.autostart.exec {
+            let mut cmd = std::process::Command::new("sh");
+            cmd.arg("-c").arg(entry);
+            if let Some(dir) = &config_dir {
+                cmd.current_dir(dir);
+            }
+            match cmd.spawn() {
+                Ok(_) => tracing::info!("autostart: launched {entry:?}"),
+                Err(err) => tracing::warn!("autostart: failed to launch {entry:?}: {err}"),
+            }
+        }
+    }
+
+    /// Starts the map-postponement clock on the first buffer commit for
+    /// `surface_id`, returning the window id once so the caller broadcasts
+    /// `window_committed`. `None` on later commits or untracked surfaces.
+    pub fn mark_committed(&mut self, surface_id: &ObjectId) -> Option<u32> {
+        for (_entity, surface) in self.world.query_mut::<&mut WaylandSurface>() {
+            if &surface.id == surface_id && surface.committed_at.is_none() {
+                surface.committed_at = Some(Instant::now());
+                return Some(surface.window_id);
+            }
+        }
+        None
+    }
+
+    /// Hot-reload: re-applies what can change at runtime (keybindings, keyboard
+    /// repeat + layout, output mode). Socket path and default window size only
+    /// take effect on restart.
+    pub fn apply_config(&mut self, config: SpatilConfig) {
+        self.keybindings = config.compile_keybindings();
+
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.change_repeat_info(config.keyboard.repeat_rate, config.keyboard.repeat_delay);
+            let xkb_config = XkbConfig {
+                layout: &config.keyboard.xkb_layout,
+                model: &config.keyboard.xkb_model,
+                ..Default::default()
+            };
+            if let Err(err) = keyboard.set_xkb_config(self, xkb_config) {
+                tracing::warn!("failed to apply reloaded xkb config: {err:?}");
+            }
+        }
+
+        let mode = Mode {
+            size: (config.display.width as i32, config.display.height as i32).into(),
+            refresh: config.display.refresh_rate as i32,
+        };
+        self.output.change_current_state(Some(mode), None, None, None);
+        self.output.set_preferred(mode);
+
+        self.config = config;
+        tracing::info!("configuration reloaded");
     }
 }

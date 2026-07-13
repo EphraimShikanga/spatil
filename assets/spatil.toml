@@ -1,0 +1,64 @@
+# Spatil example configuration.
+#
+# Copy this to ~/.config/spatil/spatil.toml (respects $XDG_CONFIG_HOME) and edit.
+# Every section and field is optional: anything you omit falls back to the
+# built-in default shown here, so a partial file is always valid. Saving the
+# file live-reloads it — no restart needed for keybindings, keyboard repeat /
+# layout, or the advertised output mode. (Socket name and default window size
+# only take effect on restart.)
+
+[general]
+# Base name of the IPC control socket. Resolved to
+# $XDG_RUNTIME_DIR/<socket_name>.sock (falls back to /tmp if unset). Automation
+# scripts connect here
+socket_name = "spatil-0"
+
+[display]
+width = 1920
+height = 1080
+refresh_rate = 60000   # in mHz; 60000 = 60 Hz
+
+[keyboard]
+repeat_rate = 25       # repeats per second
+repeat_delay = 200     # ms before repeat starts
+xkb_layout = "us"
+xkb_model = "pc105"
+
+[windows]
+default_width = 800
+default_height = 600
+# Map-postponement budget (ms). A freshly committed window stays hidden this
+# long while IPC scripts get a chance to position it, so it appears already at
+# its final spot instead of flickering from the default location. With no script
+# connected the window is revealed immediately, ignoring this value.
+map_timeout_ms = 80
+
+# Autostart: commands run once when Spatil starts, via `sh -c`. The working
+# directory is this config dir, so a relative path like "hooks/auto_place.py"
+# resolves to ~/.config/spatil/hooks/auto_place.py (scripts must be executable).
+# Use this for bars, wallpaper, and event-driven hooks. Children inherit
+# WAYLAND_DISPLAY and SPATIL_SOCKET. Uncomment to enable the bundled example hook.
+[autostart]
+exec = [
+  # "hooks/auto_place.py",
+  # "waybar",
+]
+
+# Keybindings: "Combo" = "action".
+#
+# Combo syntax: modifiers joined with '+', then the key, e.g. "Super+Shift+Return".
+#   Modifiers: Super (aliases: Logo/Win/Mod/Mod4), Ctrl (Control), Alt (Mod1/Meta), Shift.
+#   Keys: any xkb keysym name, case-insensitive (Return, space, q, F1, Left, ...).
+#   Letter keys are matched case-folded: "Super+Q" means Super+q; require Shift
+#   explicitly with "Super+Shift+q".
+#
+# Actions:
+#   "exec <command>" — run <command> via `sh -c`.
+#   "close_window"   — close the focused window.
+#   "quit"           — exit the compositor.
+#
+# NOTE: defining this table replaces the built-in defaults entirely.
+[keybindings]
+"Super+Return" = "exec alacritty"
+"Super+q" = "close_window"
+"Super+Shift+q" = "quit"

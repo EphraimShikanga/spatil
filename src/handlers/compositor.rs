@@ -89,6 +89,12 @@ impl CompositorHandler for SpatilState {
             return;
         }
 
+        // First content commit: start the postponement clock and let scripts
+        // place the window before it is revealed. Fires once per toplevel.
+        if let Some(window_id) = self.mark_committed(&target_surface_id) {
+            self.broadcast_event(&crate::ipc::SpatilEvent::new("window_committed", window_id));
+        }
+
         let buffer = with_states(surface, |states| {
             match &states
                 .cached_state

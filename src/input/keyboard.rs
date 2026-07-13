@@ -1,18 +1,16 @@
-//! Keyboard: raw `winit` key events → the seat's `wl_keyboard`.
-
 use smithay::backend::input::KeyState;
 use smithay::input::keyboard::{FilterResult, Keycode};
 use smithay::utils::SERIAL_COUNTER;
 use winit::event::{ElementState, KeyEvent};
 use winit::platform::scancode::PhysicalKeyExtScancode;
 
+use crate::config::{Action, KeyCombo};
 use crate::state::SpatilState;
 
 impl SpatilState {
     pub fn handle_keyboard(&mut self, event: KeyEvent) {
-        // Skip OS-generated key repeats. Wayland clients run their own repeat
-        // from the `repeat_info` the keyboard advertises, so forwarding these
-        // too would double up and make typing feel erratic.
+        // Clients run their own repeat from the advertised repeat_info; forwarding
+        // OS repeats too would double up.
         if event.repeat {
             return;
         }
@@ -24,15 +22,52 @@ impl SpatilState {
             return;
         };
         let keycode = Keycode::new(scancode + 8);
-        let state = match event.state {
+        let key_state = match event.state {
             ElementState::Pressed => KeyState::Pressed,
             ElementState::Released => KeyState::Released,
         };
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.input_time();
-        // Forward everything to the focused client; no compositor shortcuts yet.
-        keyboard.input::<(), _>(self, keycode, state, serial, time, |_, _, _| {
-            FilterResult::Forward
+
+        // Match bindings inside the filter, using the seat's own modifier state.
+        // A bound press is intercepted (its action returned); releases forward.
+        let action = keyboard.input::<Action, _>(self, keycode, key_state, serial, time, |data, mods, handle| {
+            if key_state != KeyState::Pressed {
+                return FilterResult::Forward;
+            }
+            let combo = KeyCombo::from_state(mods, handle.modified_sym());
+            match data.keybindings.get(&combo) {
+                Some(action) => FilterResult::Intercept(action.clone()),
+                None => FilterResult::Forward,
+            }
         });
+
+        if let Some(action) = action {
+            self.run_action(action);
+        }
+    }
+
+    fn run_action(&mut self, action: Action) {
+        match action {
+            Action::Exec(cmd) => {
+                if let Err(err) = std::process::Command::new("sh").arg("-c").arg(&cmd).spawn() {
+                    tracing::warn!("failed to exec {cmd:?}: {err}");
+                }
+            }
+            Action::CloseWindow => self.close_focused_window(),
+            Action::Quit => self.should_quit = true,
+        }
+    }
+
+    fn close_focused_window(&mut self) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let Some(focused) = keyboard.current_focus() else {
+            return;
+        };
+        if let Some(toplevel) = self.toplevels.iter().find(|t| *t.wl_surface() == focused) {
+            toplevel.send_close();
+        }
     }
 }

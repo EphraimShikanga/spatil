@@ -16,11 +16,14 @@ impl XdgShellHandler for SpatilState {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // Suggest an initial size and mark the window active, then send the first
-        // configure. The client must ack this before it may attach a buffer that
-        // rule is enforced in `CompositorHandler::commit`
+        // The client must ack this before it may
+        // attach a buffer that rule is enforced in `CompositorHandler::commit`
+        let default_size = (
+            self.config.windows.default_width,
+            self.config.windows.default_height,
+        );
         surface.with_pending_state(|state| {
-            state.size = Some((800, 600).into());
+            state.size = Some(default_size.into());
             state.states.set(xdg_toplevel::State::Activated);
         });
         surface.send_configure();
@@ -29,9 +32,11 @@ impl XdgShellHandler for SpatilState {
         // registry, not a 2D stacking structure the 3D scene graph will absorb it.
         self.toplevels.push(surface.clone());
 
+        // Spawns hidden (map-postponement); revealed once committed + placed.
+        let window_id = self.next_window_id();
         self.world.spawn((
             Transform::default(),
-            WaylandSurface { id: surface.wl_surface().id() }
+            WaylandSurface::new(surface.wl_surface().id(), window_id),
         ));
 
         // Give the new window keyboard focus so the user can type into it right
@@ -48,9 +53,11 @@ impl XdgShellHandler for SpatilState {
             .retain(|t| t.wl_surface().id() != id_to_remove);
             
         let mut entity_to_despawn = None;
+        let mut closed_window_id = None;
         for (entity, wayland_surface) in self.world.query::<&WaylandSurface>().iter() {
             if wayland_surface.id == id_to_remove {
                 entity_to_despawn = Some(entity);
+                closed_window_id = Some(wayland_surface.window_id);
                 break;
             }
         }
@@ -59,6 +66,11 @@ impl XdgShellHandler for SpatilState {
         }
 
         self.wgpu_state.remove_texture(&id_to_remove);
+
+        // Let scripts react to the window going away.
+        if let Some(window_id) = closed_window_id {
+            self.broadcast_event(&crate::ipc::SpatilEvent::new("window_closed", window_id));
+        }
     }
 
     // Popups: not yet supported. These are required by the trait, so they're

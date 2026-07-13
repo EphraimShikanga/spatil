@@ -1,5 +1,7 @@
+mod config;
 mod handlers;
 mod input;
+mod ipc;
 mod renderer;
 mod scene;
 mod state;
@@ -15,6 +17,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
+use config::SpatilConfig;
 use renderer::WgpuState;
 use state::SpatilState;
 use state::client::ClientState;
@@ -24,6 +27,9 @@ struct SpatilApp {
     window: Option<Arc<Window>>,
     display_handle: DisplayHandle,
     calloop: CalloopEventLoop<'static, SpatilState>,
+    config: SpatilConfig,
+    /// Kept alive to hold the inotify watch open; dropping it stops hot-reload.
+    _config_watcher: Option<notify::RecommendedWatcher>,
 }
 
 impl ApplicationHandler for SpatilApp {
@@ -40,8 +46,10 @@ impl ApplicationHandler for SpatilApp {
                 self.calloop.handle(),
                 self.calloop.get_signal(),
                 wgpu_state,
+                self.config.clone(),
             );
 
+            state.run_autostart();
             self.state = Some(state);
         }
     }
@@ -62,6 +70,10 @@ impl ApplicationHandler for SpatilApp {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 state.handle_keyboard(event);
+                // winit owns the thread, so a `quit` action exits its loop here.
+                if state.should_quit {
+                    event_loop.exit();
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 state.handle_pointer_motion(position);
@@ -77,6 +89,13 @@ impl ApplicationHandler for SpatilApp {
                 state.handle_pointer_axis(delta);
             }
             WindowEvent::RedrawRequested => {
+                // Reveal any window whose map-postponement timed out before drawing.
+                scene::systems::update_map_visibility(
+                    &mut state.world,
+                    !state.ipc_clients.is_empty(),
+                    std::time::Duration::from_millis(state.config.windows.map_timeout_ms),
+                );
+
                 match state.wgpu_state.render(&mut state.world) {
                     renderer::RenderOutcome::Rendered => {
                         // Unblock every client waiting on wl_surface.frame(): a
@@ -125,8 +144,39 @@ fn main() {
     tracing_subscriber::fmt::init();
     tracing::info!("Starting Spatil Compositor");
 
+    // Ignoring SIGCHLD makes the kernel auto-reap children, so apps launched by
+    // `exec` keybindings don't pile up as zombies.
+    unsafe {
+        libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+    }
+
+    config::bootstrap_config_dir();
+    let config = SpatilConfig::load();
+
+    // Autostart entries and keybinding `exec`s inherit this so hooks find the
+    // socket without hardcoding its name.
+    unsafe {
+        std::env::set_var("SPATIL_SOCKET", &config.general.socket_name);
+    }
+
     let event_loop = EventLoop::new().unwrap();
     let calloop = CalloopEventLoop::<'static, SpatilState>::try_new().unwrap();
+
+    let (config_tx, config_channel) =
+        smithay::reexports::calloop::channel::channel::<SpatilConfig>();
+    calloop
+        .handle()
+        .insert_source(config_channel, |event, _, state: &mut SpatilState| {
+            if let smithay::reexports::calloop::channel::Event::Msg(new_config) = event {
+                state.apply_config(new_config);
+            }
+        })
+        .expect("failed to insert the config-reload event source");
+    let config_watcher = config::spawn_config_watcher(config_tx);
+
+    if let Err(err) = ipc::init_ipc(&calloop.handle(), &config) {
+        tracing::warn!("failed to start IPC control socket: {err}; scripting disabled");
+    }
 
     let wayland_display = Display::<SpatilState>::new().unwrap();
     let display_handle = wayland_display.handle();
@@ -172,6 +222,8 @@ fn main() {
         window: None,
         display_handle,
         calloop,
+        config,
+        _config_watcher: config_watcher,
     };
 
     event_loop.run_app(&mut app).unwrap();

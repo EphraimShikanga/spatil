@@ -1,5 +1,24 @@
+use std::time::Duration;
+
 use hecs::World;
-use crate::scene::components::{Transform, Parent};
+use crate::scene::components::{Transform, Parent, WaylandSurface};
+
+/// Reveals committed-but-hidden windows once map-postponement lapses: either no
+/// script is connected to place them, or the timeout since first commit expired.
+/// IPC commands reveal windows directly; this is the automatic fallback path.
+pub fn update_map_visibility(world: &mut World, has_ipc_clients: bool, map_timeout: Duration) {
+    for (_entity, surface) in world.query_mut::<&mut WaylandSurface>() {
+        if surface.visible {
+            continue;
+        }
+        let Some(committed_at) = surface.committed_at else {
+            continue;
+        };
+        if !has_ipc_clients || committed_at.elapsed() >= map_timeout {
+            surface.visible = true;
+        }
+    }
+}
 
 pub fn update_world_matrices(world: &mut World) {
     // First pass: Compute local matrices
