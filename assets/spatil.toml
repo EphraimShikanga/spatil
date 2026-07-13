@@ -5,7 +5,15 @@
 # built-in default shown here, so a partial file is always valid. Saving the
 # file live-reloads it — no restart needed for keybindings, keyboard repeat /
 # layout, or the advertised output mode. (Socket name and default window size
-# only take effect on restart.)
+# only take effect on restart.) A parse error on save is ignored — Spatil keeps
+# the last-good config rather than reverting to defaults.
+
+# Split your config across files with `include`. Paths are relative to THIS
+# file's directory. Included files OVERRIDE this file, and later entries override
+# earlier ones — tables merge per-key, scalars/arrays are replaced. Handy for
+# keeping personal overrides in a file that a shipped/updated base won't touch.
+# (Duplicate keys within a SINGLE file are a TOML error; cross-file, later wins.)
+# include = ["local.toml"]
 
 [general]
 # Base name of the IPC control socket. Resolved to
@@ -54,6 +62,9 @@ exec = [
 #
 # Actions:
 #   "exec <command>" — run <command> via `sh -c`.
+#   "hook <name>"    — run hooks/<name> (a script under this config's hooks/ dir).
+#                      Meant for one-shot hooks that do a thing and exit; a
+#                      long-running hook belongs in [autostart] instead.
 #   "close_window"   — close the focused window.
 #   "quit"           — exit the compositor.
 #
@@ -62,3 +73,4 @@ exec = [
 "Super+Return" = "exec alacritty"
 "Super+q" = "close_window"
 "Super+Shift+q" = "quit"
+# "Super+g" = "hook place_next.py"   # snap the next window you open to center

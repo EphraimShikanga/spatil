@@ -3,6 +3,8 @@ use smithay::input::keyboard::{Keysym, ModifiersState, xkb};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Exec(String),
+    /// Run a script from `~/.config/spatil/hooks/` (name plus optional args).
+    Hook(String),
     CloseWindow,
     Quit,
 }
@@ -13,6 +15,10 @@ impl Action {
         if let Some(cmd) = s.strip_prefix("exec ") {
             let cmd = cmd.trim();
             return (!cmd.is_empty()).then(|| Action::Exec(cmd.to_string()));
+        }
+        if let Some(spec) = s.strip_prefix("hook ") {
+            let spec = spec.trim();
+            return (!spec.is_empty()).then(|| Action::Hook(spec.to_string()));
         }
         match s {
             "close_window" | "close" => Some(Action::CloseWindow),
@@ -128,7 +134,12 @@ mod tests {
         );
         assert_eq!(Action::parse("close_window"), Some(Action::CloseWindow));
         assert_eq!(Action::parse("quit"), Some(Action::Quit));
+        assert_eq!(
+            Action::parse("hook place_next.py --cols 4"),
+            Some(Action::Hook("place_next.py --cols 4".to_string()))
+        );
         assert_eq!(Action::parse("exec   "), None);
+        assert_eq!(Action::parse("hook  "), None);
         assert_eq!(Action::parse("frobnicate"), None);
     }
 }

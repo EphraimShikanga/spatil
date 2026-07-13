@@ -4,7 +4,10 @@ use std::path::Path;
 use super::SpatilConfig;
 
 const EXAMPLE_CONFIG: &str = include_str!("../../assets/spatil.toml");
-const EXAMPLE_HOOK: &str = include_str!("../../assets/hooks/auto_place.py");
+const EXAMPLE_HOOKS: &[(&str, &str)] = &[
+    ("auto_place.py", include_str!("../../assets/hooks/auto_place.py")),
+    ("place_next.py", include_str!("../../assets/hooks/place_next.py")),
+];
 
 /// Writes the example config and hook into the config directory on first run,
 /// unless `SPATIL_NO_BOOTSTRAP` is set (for packagers who place files
@@ -36,12 +39,13 @@ pub fn bootstrap_config_dir() {
     }
     tracing::info!("wrote starter config to {}", config_path.display());
 
-    let hook_path = hooks_dir.join("auto_place.py");
-    if let Err(err) = write_executable(&hook_path, EXAMPLE_HOOK) {
-        tracing::warn!("bootstrap: could not write {} ({err})", hook_path.display());
-        return;
+    for (name, contents) in EXAMPLE_HOOKS {
+        let hook_path = hooks_dir.join(name);
+        match write_executable(&hook_path, contents) {
+            Ok(()) => tracing::info!("wrote example hook to {}", hook_path.display()),
+            Err(err) => tracing::warn!("bootstrap: could not write {} ({err})", hook_path.display()),
+        }
     }
-    tracing::info!("wrote example hook to {}", hook_path.display());
 }
 
 fn write_executable(path: &Path, contents: &str) -> std::io::Result<()> {

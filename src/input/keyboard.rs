@@ -4,7 +4,7 @@ use smithay::utils::SERIAL_COUNTER;
 use winit::event::{ElementState, KeyEvent};
 use winit::platform::scancode::PhysicalKeyExtScancode;
 
-use crate::config::{Action, KeyCombo};
+use crate::config::{Action, KeyCombo, SpatilConfig};
 use crate::state::SpatilState;
 
 impl SpatilState {
@@ -54,8 +54,25 @@ impl SpatilState {
                     tracing::warn!("failed to exec {cmd:?}: {err}");
                 }
             }
+            Action::Hook(spec) => self.run_hook(&spec),
             Action::CloseWindow => self.close_focused_window(),
             Action::Quit => self.should_quit = true,
+        }
+    }
+
+    /// the script must be executable.
+    fn run_hook(&self, spec: &str) {
+        let Some(hooks_dir) = SpatilConfig::config_dir().map(|d| d.join("hooks")) else {
+            tracing::warn!("cannot run hook {spec:?}: no config dir");
+            return;
+        };
+        let spawn = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(spec)
+            .current_dir(&hooks_dir)
+            .spawn();
+        if let Err(err) = spawn {
+            tracing::warn!("failed to run hook {spec:?}: {err}");
         }
     }
 

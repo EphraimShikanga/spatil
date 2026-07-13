@@ -1,5 +1,6 @@
 pub mod bootstrap;
 pub mod keybindings;
+mod loader;
 pub mod watcher;
 
 pub use bootstrap::bootstrap_config_dir;
@@ -10,6 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use toml::Value;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -133,33 +135,38 @@ impl SpatilConfig {
         Self::config_path().and_then(|p| p.parent().map(Path::to_path_buf))
     }
 
-    /// Reads and parses the config file; any missing/unreadable/malformed file
-    /// falls back to [`Default`] with a logged warning rather than failing.
+    /// Loads the config for startup: like [`Self::try_load`] but never fails,
+    /// falling back to [`Default`] (with a warning) on any error.
     pub fn load() -> Self {
+        Self::try_load().unwrap_or_else(|err| {
+            tracing::warn!("{err}; using built-in defaults");
+            Self::default()
+        })
+    }
+
+    /// Reads, resolves `include`s, and parses the config. `Ok(Default)` when no
+    /// file exists yet (first run); `Err` on a read/parse/merge failure — the
+    /// hot-reload path uses this to keep the last-good config instead of
+    /// reverting to defaults on a mid-edit typo.
+    pub fn try_load() -> Result<Self, String> {
         let Some(path) = Self::config_path() else {
-            tracing::warn!("could not determine a config directory; using built-in defaults");
-            return Self::default();
+            return Ok(Self::default());
         };
-        match std::fs::read_to_string(&path) {
-            Ok(contents) => match toml::from_str::<SpatilConfig>(&contents) {
-                Ok(config) => {
-                    tracing::info!("loaded configuration from {}", path.display());
-                    config
-                }
-                Err(err) => {
-                    tracing::warn!("failed to parse {} ({err}); using defaults", path.display());
-                    Self::default()
-                }
-            },
+        match std::fs::metadata(&path) {
+            Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 tracing::info!("no config file at {}; using defaults", path.display());
-                Self::default()
+                return Ok(Self::default());
             }
-            Err(err) => {
-                tracing::warn!("failed to read {} ({err}); using defaults", path.display());
-                Self::default()
-            }
+            Err(err) => return Err(format!("cannot access {} ({err})", path.display())),
         }
+
+        let table = loader::load_with_includes(&path)?;
+        let config: SpatilConfig = Value::Table(table)
+            .try_into()
+            .map_err(|err| format!("invalid config: {err}"))?;
+        tracing::info!("loaded configuration from {}", path.display());
+        Ok(config)
     }
 
     /// Compiles the raw `keybindings` map into matchable combos, skipping (with a
@@ -192,6 +199,36 @@ mod tests {
         assert_eq!(cfg.display.height, 1080);
         assert_eq!(cfg.keyboard.repeat_rate, 25);
         assert_eq!(cfg.general.socket_name, "spatil-0");
+    }
+
+    #[test]
+    fn includes_override_the_including_file() {
+        let dir = std::env::temp_dir().join(format!("spatil-cfg-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("base.toml");
+        std::fs::write(
+            &base,
+            "include = [\"over.toml\"]\n\
+             [display]\nwidth = 1000\nheight = 1000\n\
+             [keybindings]\n\"Super+q\" = \"close_window\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("over.toml"),
+            "[display]\nheight = 2000\n\
+             [keybindings]\n\"Super+q\" = \"quit\"\n\"Super+e\" = \"exec foo\"\n",
+        )
+        .unwrap();
+
+        let table = loader::load_with_includes(&base).unwrap();
+        let cfg: SpatilConfig = Value::Table(table).try_into().unwrap();
+
+        assert_eq!(cfg.display.width, 1000);
+        assert_eq!(cfg.display.height, 2000);
+        assert_eq!(cfg.keybindings["Super+q"], "quit");
+        assert_eq!(cfg.keybindings["Super+e"], "exec foo");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

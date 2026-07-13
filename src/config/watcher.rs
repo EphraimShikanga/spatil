@@ -1,8 +1,10 @@
 use super::SpatilConfig;
 
-/// Watches the config directory and pushes a freshly parsed [`SpatilConfig`]
-/// through `tx` on every change touching `spatil.toml`. Watches the directory
-/// (not the file) so it survives editor save-via-rename. The returned watcher
+/// Watches the config directory (recursively, so included `.toml` files are
+/// covered) and pushes a freshly parsed [`SpatilConfig`] through `tx` on any
+/// change to a `.toml` file. Watching the directory (not a file) survives editor
+/// save-via-rename. A mid-edit parse error keeps the current config rather than
+/// reverting to defaults (via [`SpatilConfig::try_load`]). The returned watcher
 /// must be kept alive; `None` disables hot-reload without stopping the compositor.
 pub fn spawn_config_watcher(
     tx: smithay::reexports::calloop::channel::Sender<SpatilConfig>,
@@ -14,7 +16,6 @@ pub fn spawn_config_watcher(
         tracing::warn!("could not create {} ({err}); hot-reload disabled", dir.display());
         return None;
     }
-    let config_path = SpatilConfig::config_path()?;
 
     let mut watcher =
         match notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
@@ -25,10 +26,18 @@ pub fn spawn_config_watcher(
                 ) {
                     return;
                 }
-                if event.paths.iter().any(|p| p.file_name() == config_path.file_name())
-                    && tx.send(SpatilConfig::load()).is_err()
-                {
-                    tracing::debug!("config reload channel closed; watcher idle");
+                if !event.paths.iter().any(|p| p.extension().is_some_and(|e| e == "toml")) {
+                    return;
+                }
+                match SpatilConfig::try_load() {
+                    Ok(config) => {
+                        if tx.send(config).is_err() {
+                            tracing::debug!("config reload channel closed; watcher idle");
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!("config reload failed ({err}); keeping current config");
+                    }
                 }
             }
             Err(err) => tracing::warn!("config watcher error: {err}"),
@@ -40,7 +49,7 @@ pub fn spawn_config_watcher(
             }
         };
 
-    if let Err(err) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
+    if let Err(err) = watcher.watch(&dir, RecursiveMode::Recursive) {
         tracing::warn!("failed to watch {} ({err}); hot-reload disabled", dir.display());
         return None;
     }
