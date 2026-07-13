@@ -9,6 +9,7 @@ use smithay::wayland::shell::xdg::{
 
 use crate::state::SpatilState;
 use crate::scene::components::{Transform, WaylandSurface};
+use crate::scene::systems::default_window_placement;
 
 impl XdgShellHandler for SpatilState {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
@@ -33,9 +34,15 @@ impl XdgShellHandler for SpatilState {
         self.toplevels.push(surface.clone());
 
         // Spawns hidden (map-postponement); revealed once committed + placed.
+        // Give it a distinct default position so windows don't stack at the
+        // origin (and get depth-culled); a hook can override via move_cluster.
         let window_id = self.next_window_id();
+        let transform = Transform {
+            translation: default_window_placement(window_id),
+            ..Transform::default()
+        };
         self.world.spawn((
-            Transform::default(),
+            transform,
             WaylandSurface::new(surface.wl_surface().id(), window_id),
         ));
 
