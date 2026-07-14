@@ -8,7 +8,18 @@ description = "A Wayland compositor for tiling and floating window management"
 repository = "https://github.com/EphraimShikanga/spatil"
 
 [dependencies]
-smithay = { version = "0.7.0", default-features = false, features = ["wayland_frontend", "desktop"] }
+# Backend features (backend_drm/gbm/libinput/session_libseat/udev) drive the native
+# DRM/KMS path; renderer_gl / backend_egl are deliberately absent -- we render with
+# wgpu, not Smithay's GlesRenderer. See dev/drm-backend.md.
+smithay = { version = "0.7.0", default-features = false, features = [
+    "wayland_frontend",
+    "desktop",
+    "backend_drm",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_session_libseat",
+    "backend_udev",
+] }
 wgpu = "30"
 wgpu-hal = "30"
 # Both already in the tree transitively (ash via wgpu-hal's Vulkan backend);

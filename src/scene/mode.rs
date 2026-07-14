@@ -1,5 +1,3 @@
-//! Scene-mode seam: what varies between Strata and Aether.
-
 use std::str::FromStr;
 
 use cgmath::{Deg, One, Point3, Quaternion, Rotation3, Vector3};
@@ -47,10 +45,6 @@ pub struct CameraFraming {
     pub orbit: f32,
 }
 
-/// Static (startup/reload/resize) framing. Strata (the `reference.html` model)
-/// sits the camera at a fixed distance looking at the origin, optionally lifted
-/// by `elevation` and orbited about Y by `orbit` (both 0 = straight-on, matching
-/// the reference default). Aether's per-frame framing is [`frame_aether`].
 pub fn frame_camera(mode: SceneMode, camera: &mut Camera, framing: &CameraFraming) {
     match mode {
         SceneMode::Strata => {
@@ -79,10 +73,6 @@ pub struct AetherView {
     pub parallax_strength: f32,
 }
 
-/// Aether framing (reference model): the camera sits at a fixed distance on `+Z`
-/// looking at the origin, and the cursor orbits it laterally (`mouse ·
-/// parallax_strength`). Because the particle field and windows sit at varied
-/// depths, moving the camera parallaxes near points faster than far ones.
 pub fn frame_aether(camera: &mut Camera, view: &AetherView) {
     let px = view.pointer_ndc[0] * view.parallax_strength;
     let py = view.pointer_ndc[1] * view.parallax_strength;

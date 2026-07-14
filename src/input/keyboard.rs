@@ -14,22 +14,26 @@ impl SpatilState {
         if event.repeat {
             return;
         }
-        let Some(keyboard) = self.seat.get_keyboard() else {
-            return;
-        };
         // winit gives a linux/evdev scancode; xkb keycodes are that + 8.
         let Some(scancode) = event.physical_key.to_scancode() else {
             return;
         };
-        let keycode = Keycode::new(scancode + 8);
         let key_state = match event.state {
             ElementState::Pressed => KeyState::Pressed,
             ElementState::Released => KeyState::Released,
         };
+        self.dispatch_key(Keycode::new(scancode + 8), key_state);
+    }
+
+    /// Matches keybindings inside the seat's `input` filter (using the seat's own xkb
+    /// modifier state); non-bound keys forward to the focused client.
+    pub fn dispatch_key(&mut self, keycode: Keycode, key_state: KeyState) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.input_time();
 
-        // Match bindings inside the filter, using the seat's own modifier state.
         // A bound press is intercepted (its action returned); releases forward.
         let action = keyboard.input::<Action, _>(self, keycode, key_state, serial, time, |data, mods, handle| {
             if key_state != KeyState::Pressed {

@@ -1,5 +1,3 @@
-//! Tween-based animation: eased `Transform`/opacity interpolation + the scene-switch timer.
-
 use cgmath::{Quaternion, Vector3};
 use hecs::{Entity, World};
 use smithay::reexports::wayland_server::backend::ObjectId;

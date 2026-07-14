@@ -12,13 +12,13 @@ pub fn raycast_surface(
     state: &SpatilState,
     cursor_pos: Point<f64, Logical>,
 ) -> Option<(WlSurface, Point<f64, Logical>)> {
-    let width = state.wgpu_state.config.width as f32;
-    let height = state.wgpu_state.config.height as f32;
+    let width = state.wgpu_state.width as f32;
+    let height = state.wgpu_state.height as f32;
     if width <= 0.0 || height <= 0.0 {
         return None;
     }
 
-    // Cursor pixels → NDC. Screen Y grows downward, clip Y upward, so flip Y.
+    // Cursor pixels -> NDC. Screen Y grows downward, clip Y upward, so flip Y.
     let ndc_x = (cursor_pos.x as f32 / width) * 2.0 - 1.0;
     let ndc_y = 1.0 - (cursor_pos.y as f32 / height) * 2.0;
 
@@ -67,7 +67,7 @@ pub fn raycast_surface(
             continue;
         }
 
-        // Local [-0.5, 0.5] → UV → surface-local pixels (v flips; output scale 1).
+        // Local [-0.5, 0.5] → UV → surface-local pixels, v flips; output scale 1.
         let u = (hit.x + 0.5) as f64;
         let v = (0.5 - hit.y) as f64;
         let local_point =

@@ -61,6 +61,7 @@ pub struct SpatilState {
     pub ipc_clients: Vec<UnixStream>,
     pub should_quit: bool,
     pub last_frame: std::time::Instant,
+    pub drm: Option<crate::backend::drm::DrmOutput>,
     window_id_counter: u32,
 }
 
@@ -207,7 +208,24 @@ impl SpatilState {
             ipc_clients: Vec::new(),
             should_quit: false,
             last_frame: std::time::Instant::now(),
+            drm: None,
             window_id_counter: 1,
+        }
+    }
+
+    /// Resolves every toplevel's pending `wl_surface.frame()` callbacks so clients
+    /// draw their next frame. Called by both backends after presenting a frame; without
+    /// it real clients freeze after their first.
+    pub fn send_frame_callbacks(&self) {
+        let elapsed = self.start_time.elapsed();
+        for toplevel in &self.toplevels {
+            smithay::desktop::utils::send_frames_surface_tree(
+                toplevel.wl_surface(),
+                &self.output,
+                elapsed,
+                Some(Duration::ZERO),
+                |_, _| Some(self.output.clone()),
+            );
         }
     }
 

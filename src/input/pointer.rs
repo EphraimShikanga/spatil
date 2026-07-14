@@ -9,16 +9,21 @@ use crate::state::SpatilState;
 
 impl SpatilState {
     pub fn handle_pointer_motion(&mut self, position: PhysicalPosition<f64>) {
-        self.pointer_location = (position.x, position.y).into();
-        // NDC cursor for the Aether parallax camera (y up). Physical position and
-        // surface config share the winit-window pixel space.
+        self.dispatch_pointer_motion_absolute(position.x, position.y);
+    }
+
+    /// Updates the cursor location + Aether parallax NDC, raycasts the scene for the
+    /// surface under the cursor, and sends `wl_pointer` motion + frame.
+    pub fn dispatch_pointer_motion_absolute(&mut self, x: f64, y: f64) {
+        self.pointer_location = (x, y).into();
+        // NDC cursor for the Aether parallax camera (y up), in output pixel space.
         let (w, h) = (
-            self.wgpu_state.config.width.max(1) as f64,
-            self.wgpu_state.config.height.max(1) as f64,
+            self.wgpu_state.width.max(1) as f64,
+            self.wgpu_state.height.max(1) as f64,
         );
         self.wgpu_state.pointer_ndc = [
-            (position.x / w * 2.0 - 1.0) as f32,
-            (1.0 - position.y / h * 2.0) as f32,
+            (x / w * 2.0 - 1.0) as f32,
+            (1.0 - y / h * 2.0) as f32,
         ];
         let Some(pointer) = self.seat.get_pointer() else {
             return;
@@ -32,9 +37,6 @@ impl SpatilState {
     }
 
     pub fn handle_pointer_button(&mut self, button: MouseButton, state: ElementState) {
-        let Some(pointer) = self.seat.get_pointer() else {
-            return;
-        };
         let button_code = match button {
             MouseButton::Left => 0x110,
             MouseButton::Right => 0x111,
@@ -46,6 +48,15 @@ impl SpatilState {
         let button_state = match state {
             ElementState::Pressed => ButtonState::Pressed,
             ElementState::Released => ButtonState::Released,
+        };
+        self.dispatch_pointer_button(button_code, button_state);
+    }
+
+    /// Click-to-focus (raycast) plus the `wl_pointer` button + frame. `button_code`
+    /// is an evdev `BTN_*` code.
+    pub fn dispatch_pointer_button(&mut self, button_code: u32, button_state: ButtonState) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
         };
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.input_time();
@@ -71,9 +82,6 @@ impl SpatilState {
     }
 
     pub fn handle_pointer_axis(&mut self, delta: MouseScrollDelta) {
-        let Some(pointer) = self.seat.get_pointer() else {
-            return;
-        };
         let time = self.input_time();
         let frame = match delta {
             MouseScrollDelta::LineDelta(x, y) => {
@@ -96,6 +104,14 @@ impl SpatilState {
                 }
                 frame
             }
+        };
+        self.dispatch_pointer_axis(frame);
+    }
+
+    /// Sends a fully-built `AxisFrame` + frame, each backend builds the frame itself.
+    pub fn dispatch_pointer_axis(&mut self, frame: AxisFrame) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
         };
         pointer.axis(self, frame);
         pointer.frame(self);
