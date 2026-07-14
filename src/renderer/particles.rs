@@ -12,12 +12,12 @@ pub struct ParticleUniform {
     pub color: [f32; 4],
     pub size: f32,
     pub fog_density: f32,
-    pub _pad: [f32; 2],
+    pub field_alpha: f32,
+    pub _pad: f32,
 }
 
-/// Deterministic point cloud filling `[±half_w, ±half_h] x [0, -depth]`, matching
-/// the reference's `(rand-0.5)*W, (rand-0.5)*H, -rand*D` distribution. A fixed
-/// seed keeps positions stable across config reloads.
+/// Deterministic point cloud filling `[+-half_w, +-half_h] x [0, -depth]`. A fixed
+/// seed keeps positions stable across config reloads. THIS I TOTALLY GUESSED!!!!
 pub fn generate_particles(count: u32, half_w: f32, half_h: f32, depth: f32) -> Vec<[f32; 3]> {
     let mut state: u32 = 0x1234_5678;
     let mut rng = || {

@@ -4,11 +4,15 @@ use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::time::Instant;
 
+use std::time::Duration;
+
 use crate::config::{Action, KeyCombo, SpatilConfig};
 use crate::renderer::WgpuState;
 use crate::scene::WORLD_SCALE;
+use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete};
 use crate::scene::components::{Transform, WaylandSurface};
 use crate::scene::mode::default_transform;
+use crate::scene::systems::update_map_visibility;
 use smithay::backend::allocator::{Format, Fourcc};
 use smithay::input::keyboard::XkbConfig;
 use smithay::input::{Seat, SeatState};
@@ -56,6 +60,7 @@ pub struct SpatilState {
     pub keybindings: HashMap<KeyCombo, Action>,
     pub ipc_clients: Vec<UnixStream>,
     pub should_quit: bool,
+    pub last_frame: std::time::Instant,
     window_id_counter: u32,
 }
 
@@ -201,8 +206,53 @@ impl SpatilState {
             keybindings,
             ipc_clients: Vec::new(),
             should_quit: false,
+            last_frame: std::time::Instant::now(),
             window_id_counter: 1,
         }
+    }
+
+    pub fn reveal_pending(&mut self) {
+        let timeout = Duration::from_millis(self.config.windows.map_timeout_ms);
+        let has_ipc = !self.ipc_clients.is_empty();
+        let revealed = update_map_visibility(&mut self.world, has_ipc, timeout);
+        if revealed.is_empty() || !self.config.animation.enabled {
+            return;
+        }
+        let mode = self.config.scene_graph.scene_mode();
+        let open_ms = self.config.animation.open_ms;
+        for entity in revealed {
+            let Some(resting) = self
+                .world
+                .get::<&Transform>(entity)
+                .ok()
+                .map(|t| AnimSnapshot::of(&t))
+            else {
+                continue;
+            };
+            let start = animation::open_start(mode, &resting);
+            if let Ok(transform) = self.world.query_one_mut::<&mut Transform>(entity) {
+                start.apply_to(transform);
+            }
+            animation::tween_entity(
+                &mut self.world,
+                entity,
+                start,
+                resting,
+                open_ms,
+                Easing::EaseOutCubic,
+                OnComplete::Remove,
+            );
+        }
+    }
+
+    pub fn tick_animations(&mut self) {
+        let now = std::time::Instant::now();
+        let dt_ms = ((now - self.last_frame).as_secs_f32() * 1000.0).min(50.0);
+        self.last_frame = now;
+        for id in animation::update(&mut self.world, dt_ms) {
+            self.wgpu_state.remove_texture(&id);
+        }
+        self.wgpu_state.scene_transition.tick(dt_ms);
     }
 
     pub fn next_window_id(&mut self) -> u32 {
@@ -285,18 +335,49 @@ impl SpatilState {
         self.wgpu_state
             .apply_scene_config(&config.scene_graph, &config.display);
         let new_mode = config.scene_graph.scene_mode();
+        let mode_changed = old_mode != new_mode;
 
-        // Re-apply the mode's spawn transform to already-open windows so live
-        // pitch/mode edits reach them. Same-mode reloads only re-apply rotation
-        // (preserving IPC-set positions); a mode switch also relayouts. Scale is
-        // always preserved -- it comes from the committed buffer, not the config.
-        for (_entity, (transform, surface)) in
-            self.world.query_mut::<(&mut Transform, &WaylandSurface)>()
-        {
-            let target = default_transform(new_mode, surface.window_id, &config.scene_graph);
-            transform.rotation = target.rotation;
-            if old_mode != new_mode {
-                transform.translation = target.translation;
+        if mode_changed && config.animation.enabled {
+            self.wgpu_state
+                .scene_transition
+                .start(old_mode, new_mode, config.animation.switch_ms);
+            let switch_ms = config.animation.switch_ms;
+            let mut plans = Vec::new();
+            for (entity, (transform, surface)) in
+                self.world.query_mut::<(&Transform, &WaylandSurface)>()
+            {
+                if surface.closing {
+                    continue;
+                }
+                let target = default_transform(new_mode, surface.window_id, &config.scene_graph);
+                let start = AnimSnapshot::of(transform);
+                let mut end = start;
+                end.translation = target.translation;
+                end.rotation = target.rotation;
+                plans.push((entity, start, end));
+            }
+            for (entity, start, end) in plans {
+                animation::tween_entity(
+                    &mut self.world,
+                    entity,
+                    start,
+                    end,
+                    switch_ms,
+                    Easing::EaseOutExpo,
+                    OnComplete::Remove,
+                );
+            }
+        } else {
+            // Scale is preserved (it comes from the committed buffer) so a same-mode
+            // reload keeps translation too, so IPC-set positions survive.
+            for (_entity, (transform, surface)) in
+                self.world.query_mut::<(&mut Transform, &WaylandSurface)>()
+            {
+                let target = default_transform(new_mode, surface.window_id, &config.scene_graph);
+                transform.rotation = target.rotation;
+                if mode_changed {
+                    transform.translation = target.translation;
+                }
             }
         }
 

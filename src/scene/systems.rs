@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use cgmath::Vector3;
-use hecs::World;
+use hecs::{Entity, World};
 use crate::scene::components::{Transform, Parent, WaylandSurface};
 
 /// Strata layout: windows spread across columns in X, later rows stepping up and
@@ -33,8 +33,13 @@ pub fn aether_window_placement(window_id: u32, z_layer_gap: f32) -> Vector3<f32>
 /// Reveals committed-but-hidden windows once map-postponement lapses: either no
 /// script is connected to place them, or the timeout since first commit expired.
 /// IPC commands reveal windows directly; this is the automatic fallback path.
-pub fn update_map_visibility(world: &mut World, has_ipc_clients: bool, map_timeout: Duration) {
-    for (_entity, surface) in world.query_mut::<&mut WaylandSurface>() {
+pub fn update_map_visibility(
+    world: &mut World,
+    has_ipc_clients: bool,
+    map_timeout: Duration,
+) -> Vec<Entity> {
+    let mut revealed = Vec::new();
+    for (entity, surface) in world.query_mut::<&mut WaylandSurface>() {
         if surface.visible {
             continue;
         }
@@ -43,8 +48,10 @@ pub fn update_map_visibility(world: &mut World, has_ipc_clients: bool, map_timeo
         };
         if !has_ipc_clients || committed_at.elapsed() >= map_timeout {
             surface.visible = true;
+            revealed.push(entity);
         }
     }
+    revealed
 }
 
 pub fn update_world_matrices(world: &mut World) {

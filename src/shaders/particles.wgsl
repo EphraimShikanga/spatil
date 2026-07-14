@@ -7,7 +7,8 @@ struct ParticleUniform {
     color: vec4<f32>,
     size: f32,
     fog_density: f32,
-    _pad: vec2<f32>,
+    field_alpha: f32,
+    _pad: f32,
 };
 
 @group(0) @binding(0)
@@ -44,5 +45,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Exponential fog fades distant particles into the void for depth.
     let fog = exp(-u.fog_density * in.dist);
     let rgb = mix(u.bg_color.rgb, u.color.rgb, fog);
-    return vec4<f32>(rgb, alpha * fog);
+    return vec4<f32>(rgb, alpha * fog * u.field_alpha);
 }

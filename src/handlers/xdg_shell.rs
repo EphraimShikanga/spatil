@@ -8,7 +8,8 @@ use smithay::wayland::shell::xdg::{
 };
 
 use crate::state::SpatilState;
-use crate::scene::components::WaylandSurface;
+use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete};
+use crate::scene::components::{Transform, WaylandSurface};
 use crate::scene::mode::default_transform;
 
 impl XdgShellHandler for SpatilState {
@@ -54,20 +55,47 @@ impl XdgShellHandler for SpatilState {
         self.toplevels
             .retain(|t| t.wl_surface().id() != id_to_remove);
             
-        let mut entity_to_despawn = None;
+        let mut entity_to_close = None;
         let mut closed_window_id = None;
         for (entity, wayland_surface) in self.world.query::<&WaylandSurface>().iter() {
             if wayland_surface.id == id_to_remove {
-                entity_to_despawn = Some(entity);
+                entity_to_close = Some(entity);
                 closed_window_id = Some(wayland_surface.window_id);
                 break;
             }
         }
-        if let Some(entity) = entity_to_despawn {
-            let _ = self.world.despawn(entity);
-        }
 
-        self.wgpu_state.remove_texture(&id_to_remove);
+        if let Some(entity) = entity_to_close {
+            if self.config.animation.enabled {
+                // The entity outlives its destroyed Wayland surface to play the
+                // exit animation so the despawn + texture release happen when it ends.
+                let mode = self.config.scene_graph.scene_mode();
+                let close_ms = self.config.animation.close_ms;
+                if let Ok(surface) = self.world.query_one_mut::<&mut WaylandSurface>(entity) {
+                    surface.closing = true;
+                }
+                if let Some(resting) = self
+                    .world
+                    .get::<&Transform>(entity)
+                    .ok()
+                    .map(|t| AnimSnapshot::of(&t))
+                {
+                    let end = animation::close_end(mode, &resting);
+                    animation::tween_entity(
+                        &mut self.world,
+                        entity,
+                        resting,
+                        end,
+                        close_ms,
+                        Easing::EaseInOutCubic,
+                        OnComplete::Despawn,
+                    );
+                }
+            } else {
+                let _ = self.world.despawn(entity);
+                self.wgpu_state.remove_texture(&id_to_remove);
+            }
+        }
 
         // Let scripts react to the window going away.
         if let Some(window_id) = closed_window_id {

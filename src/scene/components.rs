@@ -8,6 +8,7 @@ pub struct Transform {
     pub translation: Vector3<f32>,
     pub rotation: Quaternion<f32>,
     pub scale: Vector3<f32>,
+    pub opacity: f32,
     pub world_matrix: Matrix4<f32>,
 }
 
@@ -17,6 +18,7 @@ impl Default for Transform {
             translation: Vector3::zero(),
             rotation: Quaternion::one(),
             scale: Vector3::new(1.0, 1.0, 1.0),
+            opacity: 1.0,
             world_matrix: Matrix4::identity(),
         }
     }
@@ -31,6 +33,7 @@ pub struct WaylandSurface {
     pub id: ObjectId,
     pub window_id: u32,
     pub visible: bool,
+    pub closing: bool,
     pub committed_at: Option<Instant>,
 }
 
@@ -40,6 +43,7 @@ impl WaylandSurface {
             id,
             window_id,
             visible: false,
+            closing: false,
             committed_at: None,
         }
     }

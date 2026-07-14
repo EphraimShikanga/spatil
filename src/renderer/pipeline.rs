@@ -11,6 +11,7 @@ pub const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
     0.0, 0.0, 0.5, 1.0,
 );
 
+#[derive(Clone, Copy)]
 pub struct Camera {
     pub eye: Point3<f32>,
     pub target: Point3<f32>,

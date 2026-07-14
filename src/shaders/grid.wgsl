@@ -10,6 +10,7 @@ struct GridUniform {
     grid_spacing: f32,
     fog_density: f32,
     enable_shadows: f32,
+    opacity: f32,
 };
 
 @group(0) @binding(0)
@@ -66,17 +67,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Intersect the horizontal floor plane at Y = grid_level.
     if abs(dir.y) < 1e-6 {
-        return grid.void_color;
+        return vec4<f32>(grid.void_color.rgb, grid.opacity);
     }
     let t = (grid.grid_level - origin.y) / dir.y;
     if t <= 0.0 {
-        return grid.void_color;
+        return vec4<f32>(grid.void_color.rgb, grid.opacity);
     }
     let hit = origin + t * dir;
 
     // Finite square grid, centered at the origin (matches the reference's GridHelper).
     if abs(hit.x) > grid.grid_extent || abs(hit.z) > grid.grid_extent {
-        return grid.void_color;
+        return vec4<f32>(grid.void_color.rgb, grid.opacity);
     }
 
     // fwidth keeps the lines ~1px wide at any depth.
@@ -92,5 +93,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let cam_dist = length(hit - origin);
     let fog = exp(-grid.fog_density * cam_dist);
     color = mix(grid.void_color.rgb, color, fog);
-    return vec4<f32>(color, 1.0);
+    return vec4<f32>(color, grid.opacity);
 }

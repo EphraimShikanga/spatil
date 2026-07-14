@@ -23,8 +23,29 @@ pub struct SpatilConfig {
     pub keyboard: Keyboard,
     pub windows: Windows,
     pub scene_graph: SceneGraph,
+    pub animation: Animation,
     pub autostart: Autostart,
     pub keybindings: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Animation {
+    pub enabled: bool,
+    pub switch_ms: f32,
+    pub open_ms: f32,
+    pub close_ms: f32,
+}
+
+impl Default for Animation {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            switch_ms: 500.0,
+            open_ms: 250.0,
+            close_ms: 220.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -249,6 +270,7 @@ impl Default for SpatilConfig {
             keyboard: Keyboard::default(),
             windows: Windows::default(),
             scene_graph: SceneGraph::default(),
+            animation: Animation::default(),
             autostart: Autostart::default(),
             keybindings: default_keybindings(),
         }

@@ -34,7 +34,7 @@ pub fn raycast_surface(
 
     for (_entity, (transform, surface)) in state.world.query::<(&Transform, &WaylandSurface)>().iter()
     {
-        if !surface.visible {
+        if !surface.visible || surface.closing {
             continue;
         }
         let Some((_, quad)) = state.wgpu_state.quads.iter().find(|(id, _)| *id == surface.id) else {

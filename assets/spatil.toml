@@ -77,7 +77,7 @@ shadow_map_size = 2048      # shadow map resolution in px (square); restart to c
 void_color = "#0F0F11"      # deep-space backdrop / clear color
 particle_color = "#D1D1D6"  # particle (star) color
 particle_count = 2000       # number of particles in the field
-particle_size = 0.015       # particle world-space size (grows nearer via perspective)
+particle_size = 0.005       # particle world-space size (grows nearer via perspective)
 particle_opacity = 0.8      # particle alpha
 field_width = 5.0           # half-extent of the particle volume in X
 field_height = 3.0          # half-extent of the particle volume in Y
@@ -90,6 +90,15 @@ glass_alpha = 0.95          # window opacity (lower = more see-through)
 glass_tint = "#12141A"      # tint blended under the surface
 glass_tint_strength = 0.1   # 0 = pure surface, 1 = full tint
 z_layer_gap = 0.35          # Z distance between successive window layers
+
+# Animations. The Strata⇄Aether switch is a fluid camera + geometry + environment
+# crossfade (never a snap); windows emerge/unfold on open and dissipate/collapse
+# on close. Durations hot-reload. Set enabled = false for instant snaps.
+[animation]
+enabled = true
+switch_ms = 500     # scene-switch choreography (ms)
+open_ms = 250       # window open animation (ms)
+close_ms = 220      # window close animation (ms)
 
 # Autostart: commands run once when Spatil starts, via `sh -c`. The working
 # directory is this config dir, so a relative path like "hooks/auto_place.py"

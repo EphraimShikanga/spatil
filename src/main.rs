@@ -89,12 +89,8 @@ impl ApplicationHandler for SpatilApp {
                 state.handle_pointer_axis(delta);
             }
             WindowEvent::RedrawRequested => {
-                // Reveal any window whose map-postponement timed out before drawing.
-                scene::systems::update_map_visibility(
-                    &mut state.world,
-                    !state.ipc_clients.is_empty(),
-                    std::time::Duration::from_millis(state.config.windows.map_timeout_ms),
-                );
+                state.reveal_pending();
+                state.tick_animations();
 
                 match state.wgpu_state.render(&mut state.world) {
                     renderer::RenderOutcome::Rendered => {

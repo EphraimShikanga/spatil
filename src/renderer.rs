@@ -18,6 +18,7 @@ use smithay::reexports::wayland_server::backend::ObjectId;
 use crate::config::{Aether, Display, SceneGraph, SpatilConfig, parse_hex_color};
 use crate::scene::WORLD_SCALE;
 use crate::scene::components::{Transform, WaylandSurface};
+use crate::scene::animation::SceneTransition;
 use crate::scene::mode::{self, AetherView, CameraFraming, SceneMode};
 use crate::scene::systems::update_world_matrices;
 
@@ -26,6 +27,15 @@ use particles::{ParticlePipeline, ParticleUniform};
 use pipeline::{Camera, OPENGL_TO_WGPU_MATRIX, QuadPipeline, QuadUniform};
 use shadow::{LightUniform, ShadowMap, ShadowPipeline};
 use texture::TexturedQuad;
+
+fn lerp4(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+        a[3] + (b[3] - a[3]) * t,
+    ]
+}
 
 fn glass_tint(aether: &Aether) -> [f32; 4] {
     let rgb = parse_hex_color(&aether.glass_tint);
@@ -70,6 +80,7 @@ pub struct WgpuState {
     pub shadow_map: ShadowMap,
     pub camera: Camera,
     pub scene_mode: SceneMode,
+    pub scene_transition: SceneTransition,
     pub pointer_ndc: [f32; 2],
     pub grid_color: [f32; 4],
     pub void_color: [f32; 4],
@@ -300,6 +311,7 @@ impl WgpuState {
             shadow_map,
             camera,
             scene_mode,
+            scene_transition: SceneTransition::idle(),
             pointer_ndc: [0.0, 0.0],
             grid_color: parse_hex_color(&strata.grid_color),
             void_color: parse_hex_color(&strata.void_color),
@@ -603,6 +615,46 @@ impl WgpuState {
         }
     }
 
+    fn frame_for(&self, camera: &mut Camera, mode: SceneMode) {
+        match mode {
+            SceneMode::Strata => mode::frame_camera(
+                SceneMode::Strata,
+                camera,
+                &CameraFraming {
+                    distance: self.strata_camera_distance,
+                    elevation: self.strata_camera_elevation,
+                    orbit: self.strata_camera_orbit,
+                },
+            ),
+            SceneMode::Aether => {
+                let parallax = if self.aether_parallax_enabled {
+                    self.aether_parallax_strength
+                } else {
+                    0.0
+                };
+                mode::frame_aether(
+                    camera,
+                    &AetherView {
+                        distance: self.aether_camera_distance,
+                        pointer_ndc: self.pointer_ndc,
+                        parallax_strength: parallax,
+                    },
+                );
+            }
+        }
+    }
+
+    fn scene_presence(&self) -> f32 {
+        let base = |m: SceneMode| if matches!(m, SceneMode::Aether) { 1.0 } else { 0.0 };
+        if self.scene_transition.active {
+            let a = base(self.scene_transition.from);
+            let b = base(self.scene_transition.to);
+            a + (b - a) * self.scene_transition.eased()
+        } else {
+            base(self.scene_mode)
+        }
+    }
+
     /// Acquires and draws a frame. Returns `true` if the caller should
     /// reconfigure the surface (e.g. after resize/output-change) before the
     /// next frame; the surface is already reconfigured internally for the
@@ -643,24 +695,26 @@ impl WgpuState {
                 label: Some("Render Encoder"),
             });
 
-        let strata = matches!(self.scene_mode, SceneMode::Strata);
+        let presence = self.scene_presence();
+        let field_alpha = presence;
+        let grid_alpha = 1.0 - presence;
+        let draw_particles = field_alpha > 0.001;
+        let draw_grid = grid_alpha > 0.001;
 
-        // Aether orbits the camera around the origin with the cursor every frame,
-        // so the matrices below must be built after it.
-        if !strata {
-            let parallax = if self.aether_parallax_enabled {
-                self.aether_parallax_strength
-            } else {
-                0.0
-            };
-            mode::frame_aether(
-                &mut self.camera,
-                &AetherView {
-                    distance: self.aether_camera_distance,
-                    pointer_ndc: self.pointer_ndc,
-                    parallax_strength: parallax,
-                },
-            );
+        if self.scene_transition.active {
+            let p = self.scene_transition.eased();
+            let (from, to) = (self.scene_transition.from, self.scene_transition.to);
+            let mut c0 = self.camera;
+            self.frame_for(&mut c0, from);
+            let mut c1 = self.camera;
+            self.frame_for(&mut c1, to);
+            self.camera.eye = c0.eye + (c1.eye - c0.eye) * p;
+            self.camera.target = c0.target + (c1.target - c0.target) * p;
+            self.camera.up = Vector3::unit_y();
+        } else {
+            let mut c = self.camera;
+            self.frame_for(&mut c, self.scene_mode);
+            self.camera = c;
         }
 
         let view_proj = self.camera.build_view_projection_matrix();
@@ -670,20 +724,12 @@ impl WgpuState {
             .unwrap_or_else(|| Matrix4::identity());
         let light_view_proj = light_view_projection(self.light_position, self.floor_half);
 
-        let clear = if strata {
-            self.void_color
-        } else {
-            self.aether_void_color
-        };
-        let (window_alpha, window_tint) = if strata {
-            (1.0, [0.0; 4])
-        } else {
-            (self.aether_glass_alpha, self.aether_glass_tint)
-        };
+        let clear = lerp4(self.void_color, self.aether_void_color, presence);
+        let window_alpha = 1.0 + (self.aether_glass_alpha - 1.0) * presence;
+        let window_tint = lerp4([0.0; 4], self.aether_glass_tint, presence);
 
-        // Write each quad's own uniform up front so both passes read final values.
-        // World Z is tracked so Aether can draw back-to-front for correct
-        // translucent compositing; Strata is opaque and order-independent.
+        // Each quad writes its own uniform buffer so both the shadow and color
+        // passes read final values without a mid-pass rewrite.
         let mut draw_list: Vec<(usize, f32)> = Vec::new();
         for (_id, (transform, wayland_surface)) in
             world.query::<(&Transform, &WaylandSurface)>().iter()
@@ -705,7 +751,7 @@ impl WgpuState {
                         mvp: (view_proj * model).into(),
                         model: model.into(),
                         uv_scale: quad.uv_scale,
-                        alpha: window_alpha,
+                        alpha: window_alpha * transform.opacity,
                         _pad: 0.0,
                         tint: window_tint,
                     }]),
@@ -713,13 +759,14 @@ impl WgpuState {
                 draw_list.push((idx, model.w.z));
             }
         }
-        if !strata {
+        // Back-to-front so translucent windows composite correctly.
+        if presence > 0.001 {
             draw_list.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         }
 
         // Runs even with no windows, so the map is cleared to 1.0 (unoccluded)
         // every frame rather than sampled stale by the grid.
-        if strata && self.enable_shadows {
+        if draw_grid && self.enable_shadows {
             self.queue.write_buffer(
                 &self.shadow_pipeline.light_uniform_buffer,
                 0,
@@ -757,7 +804,7 @@ impl WgpuState {
             }
         }
 
-        if strata {
+        if draw_grid {
             self.queue.write_buffer(
                 &self.grid_pipeline.uniform_buffer,
                 0,
@@ -773,12 +820,13 @@ impl WgpuState {
                     grid_spacing: self.grid_spacing,
                     fog_density: self.grid_fog_density,
                     enable_shadows: if self.enable_shadows { 1.0 } else { 0.0 },
-                    _pad: [0.0; 3],
+                    opacity: grid_alpha,
+                    _pad: [0.0; 2],
                 }]),
             );
         }
 
-        if !strata {
+        if draw_particles {
             let forward = (self.camera.target - self.camera.eye).normalize();
             let right = forward.cross(self.camera.up).normalize();
             let cam_up = right.cross(forward);
@@ -794,7 +842,8 @@ impl WgpuState {
                     color: self.aether_particle_color,
                     size: self.aether_particle_size,
                     fog_density: self.aether_fog_density,
-                    _pad: [0.0; 2],
+                    field_alpha,
+                    _pad: 0.0,
                 }]),
             );
         }
@@ -829,9 +878,8 @@ impl WgpuState {
                 multiview_mask: None,
             });
 
-            // Aether draws the particle field first (backdrop) so the windows
-            // and their translucency composite over it.
-            if !strata {
+            // Backdrop first, windows, then the floor last (fills where no window drew).
+            if draw_particles {
                 render_pass.set_pipeline(&self.particle_pipeline.pipeline);
                 render_pass.set_bind_group(0, &self.particle_pipeline.uniform_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.particle_instances.slice(..));
@@ -850,7 +898,7 @@ impl WgpuState {
                 render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
             }
 
-            if strata {
+            if draw_grid {
                 render_pass.set_pipeline(&self.grid_pipeline.pipeline);
                 render_pass.set_bind_group(0, &self.grid_pipeline.uniform_bind_group, &[]);
                 render_pass.set_bind_group(1, &self.grid_pipeline.shadow_bind_group, &[]);

@@ -16,7 +16,8 @@ pub struct GridUniform {
     pub grid_spacing: f32,
     pub fog_density: f32,
     pub enable_shadows: f32,
-    pub _pad: [f32; 3],
+    pub opacity: f32,
+    pub _pad: [f32; 2],
 }
 
 pub struct GridPipeline {
@@ -95,7 +96,8 @@ impl GridPipeline {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    // Alpha-blended so the floor can crossfade during a scene switch.
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
