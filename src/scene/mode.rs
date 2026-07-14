@@ -7,11 +7,11 @@ use cgmath::{Deg, One, Point3, Quaternion, Rotation3, Vector3};
 use crate::config::SceneGraph;
 use crate::renderer::pipeline::Camera;
 use crate::scene::components::Transform;
-use crate::scene::systems::{aether_window_placement, default_window_placement};
+use crate::scene::systems::{aether_window_placement, strata_window_placement};
 
-// Phase-0 placeholder framing distance; phase 1 derives it from the window
-// cluster bounds.
-const AETHER_CAMERA_DISTANCE: f32 = 3.0;
+// Baseline Aether camera distance for the static framing path; the per-frame
+// path uses the configured distance.
+const AETHER_CAMERA_DISTANCE: f32 = 2.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SceneMode {
@@ -42,13 +42,29 @@ impl SceneMode {
 }
 
 pub struct CameraFraming {
-    pub camera_pitch: f32,
-    pub floor_half: [f32; 2],
+    pub distance: f32,
+    pub elevation: f32,
+    pub orbit: f32,
 }
 
+/// Static (startup/reload/resize) framing. Strata (the `reference.html` model)
+/// sits the camera at a fixed distance looking at the origin, optionally lifted
+/// by `elevation` and orbited about Y by `orbit` (both 0 = straight-on, matching
+/// the reference default). Aether's per-frame framing is [`frame_aether`].
 pub fn frame_camera(mode: SceneMode, camera: &mut Camera, framing: &CameraFraming) {
     match mode {
-        SceneMode::Strata => camera.retarget(framing.camera_pitch, framing.floor_half),
+        SceneMode::Strata => {
+            let elev = framing.elevation.to_radians();
+            let orbit = framing.orbit.to_radians();
+            let d = framing.distance;
+            camera.eye = Point3::new(
+                d * orbit.sin() * elev.cos(),
+                d * elev.sin(),
+                d * orbit.cos() * elev.cos(),
+            );
+            camera.target = Point3::new(0.0, 0.0, 0.0);
+            camera.up = Vector3::unit_y();
+        }
         SceneMode::Aether => {
             camera.eye = Point3::new(0.0, 0.0, AETHER_CAMERA_DISTANCE);
             camera.target = Point3::new(0.0, 0.0, 0.0);
@@ -57,12 +73,31 @@ pub fn frame_camera(mode: SceneMode, camera: &mut Camera, framing: &CameraFramin
     }
 }
 
+pub struct AetherView {
+    pub distance: f32,
+    pub pointer_ndc: [f32; 2],
+    pub parallax_strength: f32,
+}
+
+/// Aether framing (reference model): the camera sits at a fixed distance on `+Z`
+/// looking at the origin, and the cursor orbits it laterally (`mouse ·
+/// parallax_strength`). Because the particle field and windows sit at varied
+/// depths, moving the camera parallaxes near points faster than far ones.
+pub fn frame_aether(camera: &mut Camera, view: &AetherView) {
+    let px = view.pointer_ndc[0] * view.parallax_strength;
+    let py = view.pointer_ndc[1] * view.parallax_strength;
+    camera.eye = Point3::new(px, py, view.distance);
+    camera.target = Point3::new(0.0, 0.0, 0.0);
+    camera.up = Vector3::unit_y();
+}
+
 pub fn default_transform(mode: SceneMode, window_id: u32, scene: &SceneGraph) -> Transform {
     match mode {
         SceneMode::Strata => {
             let strata = &scene.strata;
+            let base = Vector3::new(0.0, strata.window_base_y, strata.window_base_z);
             Transform {
-                translation: default_window_placement(window_id, strata.window_hover_height),
+                translation: base + strata_window_placement(window_id),
                 rotation: Quaternion::from_angle_x(Deg(-strata.window_pitch)),
                 ..Transform::default()
             }

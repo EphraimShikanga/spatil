@@ -4,15 +4,18 @@ use cgmath::Vector3;
 use hecs::World;
 use crate::scene::components::{Transform, Parent, WaylandSurface};
 
-pub fn default_window_placement(window_id: u32, hover_height: f32) -> Vector3<f32> {
+/// Strata layout: windows spread across columns in X, later rows stepping up and
+/// back so a tilted cluster fans out above the grid (relative to the group base).
+pub fn strata_window_placement(window_id: u32) -> Vector3<f32> {
     const COLS: u32 = 3;
-    const SPACING: f32 = 0.9;
+    const SPACING_X: f32 = 0.9;
+    const ROW_UP: f32 = 0.5;
+    const ROW_BACK: f32 = 0.6;
     let index = window_id.saturating_sub(1);
     let col = (index % COLS) as f32;
     let row = (index / COLS) as f32;
-    let x = (col - (COLS as f32 - 1.0) / 2.0) * SPACING;
-    let z = -row * SPACING;
-    Vector3::new(x, hover_height, z)
+    let x = (col - (COLS as f32 - 1.0) / 2.0) * SPACING_X;
+    Vector3::new(x, row * ROW_UP, -row * ROW_BACK)
 }
 
 pub fn aether_window_placement(window_id: u32, z_layer_gap: f32) -> Vector3<f32> {

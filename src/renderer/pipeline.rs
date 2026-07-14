@@ -19,49 +19,23 @@ pub struct Camera {
     pub fovy: f32,
     pub znear: f32,
     pub zfar: f32,
-    pitch_degrees: f32,
-    floor_half: [f32; 2],
 }
 
 impl Camera {
-    pub fn new(aspect: f32, pitch_degrees: f32, floor_half: [f32; 2]) -> Self {
-        let mut camera = Self {
-            eye: Point3::new(0.0, 0.0, 5.0),
+    pub fn new(aspect: f32) -> Self {
+        Self {
+            eye: Point3::new(0.0, 0.0, 3.0),
             target: Point3::new(0.0, 0.0, 0.0),
             up: Vector3::unit_y(),
             aspect,
             fovy: 45.0,
             znear: 0.1,
             zfar: 100.0,
-            pitch_degrees,
-            floor_half,
-        };
-        camera.retarget(pitch_degrees, floor_half);
-        camera
+        }
     }
 
     pub fn set_aspect(&mut self, aspect: f32) {
         self.aspect = aspect;
-        self.retarget(self.pitch_degrees, self.floor_half);
-    }
-
-    pub fn retarget(&mut self, pitch_degrees: f32, floor_half: [f32; 2]) {
-        self.pitch_degrees = pitch_degrees;
-        self.floor_half = floor_half;
-
-        let half_fovy = 0.5 * self.fovy.to_radians();
-        let pitch = pitch_degrees.abs().clamp(1.0, 60.0).to_radians();
-        let bottom = pitch + half_fovy;
-
-        let tan_half_fovx = self.aspect * half_fovy.tan();
-        let axial = floor_half[0] / tan_half_fovx;
-        let height = axial * bottom.sin() / half_fovy.cos();
-        let back = height / bottom.tan();
-
-        self.eye = Point3::new(0.0, height, floor_half[1] + back);
-        let forward = Vector3::new(0.0, -pitch.sin(), -pitch.cos());
-        self.target = self.eye + forward;
-        self.up = Vector3::unit_y();
     }
 
     pub fn build_view_projection_matrix(&self) -> Matrix4<f32> {
@@ -82,7 +56,10 @@ pub struct QuadUniform {
     pub mvp: [[f32; 4]; 4],
     pub model: [[f32; 4]; 4],
     pub uv_scale: [f32; 2],
-    pub _padding: [f32; 2],
+    pub alpha: f32,
+    pub _pad: f32,
+    // rgb = tint (linear), a = tint strength. Zeroed in Strata (opaque, untinted).
+    pub tint: [f32; 4],
 }
 
 #[repr(C)]
@@ -143,7 +120,8 @@ impl QuadPipeline {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    // vs reads mvp/uv_scale; fs reads alpha/tint (glass material).
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,

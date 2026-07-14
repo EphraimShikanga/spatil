@@ -11,10 +11,12 @@ pub struct GridUniform {
     pub grid_color: [f32; 4],
     pub void_color: [f32; 4],
     pub axis_color: [f32; 4],
-    pub grid_half_width: f32,
-    pub grid_horizon_dist: f32,
+    pub grid_extent: f32,
+    pub grid_level: f32,
     pub grid_spacing: f32,
+    pub fog_density: f32,
     pub enable_shadows: f32,
+    pub _pad: [f32; 3],
 }
 
 pub struct GridPipeline {

@@ -5,9 +5,10 @@ struct GridUniform {
     grid_color: vec4<f32>,
     void_color: vec4<f32>,
     axis_color: vec4<f32>,
-    grid_half_width: f32,
-    grid_horizon_dist: f32,
+    grid_extent: f32,
+    grid_level: f32,
     grid_spacing: f32,
+    fog_density: f32,
     enable_shadows: f32,
 };
 
@@ -63,30 +64,33 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let origin = grid.camera_eye.xyz;
     let dir = normalize(far - near);
 
-    if abs(dir.y) < 1e-6 || (-origin.y / dir.y) <= 0.0 {
+    // Intersect the horizontal floor plane at Y = grid_level.
+    if abs(dir.y) < 1e-6 {
         return grid.void_color;
     }
-    let t = -origin.y / dir.y;
+    let t = (grid.grid_level - origin.y) / dir.y;
+    if t <= 0.0 {
+        return grid.void_color;
+    }
     let hit = origin + t * dir;
 
-    if abs(hit.x) > grid.grid_half_width {
+    // Finite square grid, centered at the origin (matches the reference's GridHelper).
+    if abs(hit.x) > grid.grid_extent || abs(hit.z) > grid.grid_extent {
         return grid.void_color;
     }
 
-    // fwidth keeps lines ~1px wide at any depth. The center axes (coord == 0)
-    // are drawn thicker and in axis_color, on top of the regular grid.
+    // fwidth keeps the lines ~1px wide at any depth.
     let coord = hit.xz / grid.grid_spacing;
     let deriv = fwidth(coord);
     let line_dist = abs(fract(coord - 0.5) - 0.5) / deriv;
     let grid_i = 1.0 - min(min(line_dist.x, line_dist.y), 1.0);
-    let axis_dist = abs(coord) / deriv;
-    let axis_i = 1.0 - smoothstep(0.0, 2.0, min(axis_dist.x, axis_dist.y));
 
-    let cam_dist = length(hit.xz - grid.camera_eye.xz);
-    let horizon = 1.0 - smoothstep(grid.grid_horizon_dist * 0.5, grid.grid_horizon_dist, cam_dist);
-
-    var color = mix(grid.void_color.rgb, grid.grid_color.rgb, grid_i * horizon);
-    color = mix(color, grid.axis_color.rgb, axis_i * horizon);
+    var color = mix(grid.void_color.rgb, grid.grid_color.rgb, grid_i);
     color *= mix(0.4, 1.0, floor_shadow(hit));
+
+    // Exponential fog fades the grid into the void with distance.
+    let cam_dist = length(hit - origin);
+    let fog = exp(-grid.fog_density * cam_dist);
+    color = mix(grid.void_color.rgb, color, fog);
     return vec4<f32>(color, 1.0);
 }

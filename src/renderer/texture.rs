@@ -129,7 +129,9 @@ impl TexturedQuad {
                 mvp: cgmath::Matrix4::identity().into(),
                 model: cgmath::Matrix4::identity().into(),
                 uv_scale,
-                _padding: [0.0; 2],
+                alpha: 1.0,
+                _pad: 0.0,
+                tint: [0.0; 4],
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });

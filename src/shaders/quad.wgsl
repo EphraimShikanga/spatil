@@ -2,7 +2,9 @@ struct QuadUniform {
     mvp: mat4x4<f32>,
     model: mat4x4<f32>,
     uv_scale: vec2<f32>,
-    _padding: vec2<f32>,
+    alpha: f32,
+    _pad: f32,
+    tint: vec4<f32>,
 };
 @group(0) @binding(0)
 var<uniform> quad: QuadUniform;
@@ -32,10 +34,10 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var color = textureSample(t_diffuse, s_diffuse, in.uv);
-    // Force opaque: Xrgb8888's alpha byte is undefined, and with alpha blending
-    // a src alpha of 0 would make the quad vanish into the background. Writing
-    // a=1.0 also keeps Spatil's own framebuffer opaque to the host compositor.
-    color.a = 1.0;
-    return color;
+    let surface = textureSample(t_diffuse, s_diffuse, in.uv);
+    let rgb = mix(surface.rgb, quad.tint.rgb, quad.tint.a);
+    // Opacity comes from the uniform, never the sampled alpha: Xrgb8888's alpha
+    // byte is undefined. Strata passes alpha=1 (opaque, as before); Aether passes
+    // glass_alpha for translucent panes.
+    return vec4<f32>(rgb, quad.alpha);
 }

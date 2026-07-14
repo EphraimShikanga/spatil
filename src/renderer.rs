@@ -1,4 +1,5 @@
 pub mod grid;
+pub mod particles;
 pub mod pipeline;
 pub mod shadow;
 pub mod texture;
@@ -6,7 +7,7 @@ pub mod texture;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cgmath::{Matrix4, Point3, SquareMatrix, Vector3};
+use cgmath::{InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
 use wgpu::{Device, Queue, Surface, SurfaceConfiguration};
 use winit::window::Window;
 
@@ -14,16 +15,27 @@ use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer as _, Fourcc, Modifier};
 use smithay::reexports::wayland_server::backend::ObjectId;
 
-use crate::config::{Display, SceneGraph, SpatilConfig, parse_hex_color};
+use crate::config::{Aether, Display, SceneGraph, SpatilConfig, parse_hex_color};
 use crate::scene::WORLD_SCALE;
 use crate::scene::components::{Transform, WaylandSurface};
-use crate::scene::mode::{self, CameraFraming, SceneMode};
+use crate::scene::mode::{self, AetherView, CameraFraming, SceneMode};
 use crate::scene::systems::update_world_matrices;
 
 use grid::{GridPipeline, GridUniform};
+use particles::{ParticlePipeline, ParticleUniform};
 use pipeline::{Camera, OPENGL_TO_WGPU_MATRIX, QuadPipeline, QuadUniform};
 use shadow::{LightUniform, ShadowMap, ShadowPipeline};
 use texture::TexturedQuad;
+
+fn glass_tint(aether: &Aether) -> [f32; 4] {
+    let rgb = parse_hex_color(&aether.glass_tint);
+    [rgb[0], rgb[1], rgb[2], aether.glass_tint_strength]
+}
+
+fn particle_color(aether: &Aether) -> [f32; 4] {
+    let c = parse_hex_color(&aether.particle_color);
+    [c[0], c[1], c[2], aether.particle_opacity]
+}
 
 fn floor_half_extent(display: &Display) -> [f32; 2] {
     [
@@ -51,19 +63,36 @@ pub struct WgpuState {
     pub depth_texture_view: wgpu::TextureView,
     pub quad_pipeline: QuadPipeline,
     pub grid_pipeline: GridPipeline,
+    pub particle_pipeline: ParticlePipeline,
+    pub particle_instances: wgpu::Buffer,
+    pub particle_count: u32,
     pub shadow_pipeline: ShadowPipeline,
     pub shadow_map: ShadowMap,
     pub camera: Camera,
     pub scene_mode: SceneMode,
+    pub pointer_ndc: [f32; 2],
     pub grid_color: [f32; 4],
     pub void_color: [f32; 4],
     pub axis_color: [f32; 4],
     pub aether_void_color: [f32; 4],
+    pub aether_particle_color: [f32; 4],
+    pub aether_glass_tint: [f32; 4],
+    pub aether_glass_alpha: f32,
+    pub aether_particle_size: f32,
+    pub aether_fog_density: f32,
+    pub aether_camera_distance: f32,
+    pub aether_field: [f32; 3],
+    pub aether_parallax_enabled: bool,
+    pub aether_parallax_strength: f32,
     pub floor_half: [f32; 2],
     pub light_position: [f32; 3],
     pub grid_spacing: f32,
-    pub grid_depth: f32,
-    pub grid_width: f32,
+    pub grid_extent: f32,
+    pub grid_level: f32,
+    pub grid_fog_density: f32,
+    pub strata_camera_distance: f32,
+    pub strata_camera_elevation: f32,
+    pub strata_camera_orbit: f32,
     pub enable_shadows: bool,
     pub quads: Vec<(ObjectId, TexturedQuad)>,
     pub dmabuf_textures: HashMap<ObjectId, (wgpu::Texture, u32, u32, [f32; 2])>,
@@ -118,6 +147,7 @@ pub enum RenderOutcome {
     Skipped,
     Lost,
 }
+
 
 impl WgpuState {
     pub async fn new(window: Arc<Window>, config: &SpatilConfig) -> Self {
@@ -218,17 +248,24 @@ impl WgpuState {
         let shadow_pipeline = ShadowPipeline::new(&device);
         let shadow_map = ShadowMap::new(&device, strata.shadow_map_size);
         let grid_pipeline = GridPipeline::new(&device, surface_config.format, &shadow_map);
-        let mut camera = Camera::new(
-            surface_config.width as f32 / surface_config.height as f32,
-            strata.camera_pitch,
-            floor_half,
+        let particle_pipeline = ParticlePipeline::new(&device, surface_config.format);
+        let aether = &scene.aether;
+        let particle_positions = particles::generate_particles(
+            aether.particle_count,
+            aether.field_width,
+            aether.field_height,
+            aether.field_depth,
         );
+        let particle_instances = particles::instance_buffer(&device, &particle_positions);
+        let mut camera =
+            Camera::new(surface_config.width as f32 / surface_config.height as f32);
         mode::frame_camera(
             scene_mode,
             &mut camera,
             &CameraFraming {
-                camera_pitch: strata.camera_pitch,
-                floor_half,
+                distance: strata.camera_distance,
+                elevation: strata.camera_elevation,
+                orbit: strata.camera_orbit,
             },
         );
 
@@ -256,19 +293,36 @@ impl WgpuState {
             depth_texture_view,
             quad_pipeline,
             grid_pipeline,
+            particle_pipeline,
+            particle_instances,
+            particle_count: aether.particle_count,
             shadow_pipeline,
             shadow_map,
             camera,
             scene_mode,
+            pointer_ndc: [0.0, 0.0],
             grid_color: parse_hex_color(&strata.grid_color),
             void_color: parse_hex_color(&strata.void_color),
             axis_color: parse_hex_color(&strata.axis_color),
-            aether_void_color: parse_hex_color(&scene.aether.void_color),
+            aether_void_color: parse_hex_color(&aether.void_color),
+            aether_particle_color: particle_color(aether),
+            aether_glass_tint: glass_tint(aether),
+            aether_glass_alpha: aether.glass_alpha,
+            aether_particle_size: aether.particle_size,
+            aether_fog_density: aether.fog_density,
+            aether_camera_distance: aether.camera_distance,
+            aether_field: [aether.field_width, aether.field_height, aether.field_depth],
+            aether_parallax_enabled: aether.parallax_enabled,
+            aether_parallax_strength: aether.parallax_strength,
             floor_half,
             light_position: strata.light_position,
             grid_spacing: strata.grid_spacing,
-            grid_depth: strata.grid_depth,
-            grid_width: strata.grid_width,
+            grid_extent: strata.grid_extent,
+            grid_level: strata.grid_level,
+            grid_fog_density: strata.fog_density,
+            strata_camera_distance: strata.camera_distance,
+            strata_camera_elevation: strata.camera_elevation,
+            strata_camera_orbit: strata.camera_orbit,
             enable_shadows: strata.enable_shadows,
             quads: Vec::new(),
             dmabuf_textures: HashMap::new(),
@@ -284,19 +338,49 @@ impl WgpuState {
         self.grid_color = parse_hex_color(&strata.grid_color);
         self.void_color = parse_hex_color(&strata.void_color);
         self.axis_color = parse_hex_color(&strata.axis_color);
-        self.aether_void_color = parse_hex_color(&scene.aether.void_color);
+        let aether = &scene.aether;
+        self.aether_void_color = parse_hex_color(&aether.void_color);
+        self.aether_particle_color = particle_color(aether);
+        self.aether_glass_tint = glass_tint(aether);
+        self.aether_glass_alpha = aether.glass_alpha;
+        self.aether_particle_size = aether.particle_size;
+        self.aether_fog_density = aether.fog_density;
+        self.aether_camera_distance = aether.camera_distance;
+        self.aether_parallax_enabled = aether.parallax_enabled;
+        self.aether_parallax_strength = aether.parallax_strength;
+
+        // Regenerate the point cloud only when its shape changed, so unrelated
+        // edits don't reshuffle the stars.
+        let field = [aether.field_width, aether.field_height, aether.field_depth];
+        if self.particle_count != aether.particle_count || self.aether_field != field {
+            let positions = particles::generate_particles(
+                aether.particle_count,
+                aether.field_width,
+                aether.field_height,
+                aether.field_depth,
+            );
+            self.particle_instances = particles::instance_buffer(&self.device, &positions);
+            self.particle_count = aether.particle_count;
+            self.aether_field = field;
+        }
+
         self.floor_half = floor_half_extent(display);
         self.light_position = strata.light_position;
         self.grid_spacing = strata.grid_spacing;
-        self.grid_depth = strata.grid_depth;
-        self.grid_width = strata.grid_width;
+        self.grid_extent = strata.grid_extent;
+        self.grid_level = strata.grid_level;
+        self.grid_fog_density = strata.fog_density;
+        self.strata_camera_distance = strata.camera_distance;
+        self.strata_camera_elevation = strata.camera_elevation;
+        self.strata_camera_orbit = strata.camera_orbit;
         self.enable_shadows = strata.enable_shadows;
         mode::frame_camera(
             self.scene_mode,
             &mut self.camera,
             &CameraFraming {
-                camera_pitch: strata.camera_pitch,
-                floor_half: self.floor_half,
+                distance: strata.camera_distance,
+                elevation: strata.camera_elevation,
+                orbit: strata.camera_orbit,
             },
         );
     }
@@ -324,13 +408,11 @@ impl WgpuState {
             self.depth_texture_view =
                 depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-            let aspect = new_size.width as f32 / new_size.height as f32;
-            match self.scene_mode {
-                // Strata's framing depends on aspect (near-edge fit); Aether's
-                // straight-on eye/target don't, only its projection does.
-                SceneMode::Strata => self.camera.set_aspect(aspect),
-                SceneMode::Aether => self.camera.aspect = aspect,
-            }
+            // Both modes only need the projection aspect updated on resize; the
+            // eye/target are set by the mode framing (fixed for Strata, per-frame
+            // for Aether).
+            self.camera
+                .set_aspect(new_size.width as f32 / new_size.height as f32);
         }
     }
 
@@ -561,6 +643,26 @@ impl WgpuState {
                 label: Some("Render Encoder"),
             });
 
+        let strata = matches!(self.scene_mode, SceneMode::Strata);
+
+        // Aether orbits the camera around the origin with the cursor every frame,
+        // so the matrices below must be built after it.
+        if !strata {
+            let parallax = if self.aether_parallax_enabled {
+                self.aether_parallax_strength
+            } else {
+                0.0
+            };
+            mode::frame_aether(
+                &mut self.camera,
+                &AetherView {
+                    distance: self.aether_camera_distance,
+                    pointer_ndc: self.pointer_ndc,
+                    parallax_strength: parallax,
+                },
+            );
+        }
+
         let view_proj = self.camera.build_view_projection_matrix();
         let inv_view_proj = self
             .camera
@@ -568,15 +670,21 @@ impl WgpuState {
             .unwrap_or_else(|| Matrix4::identity());
         let light_view_proj = light_view_projection(self.light_position, self.floor_half);
 
-        let strata = matches!(self.scene_mode, SceneMode::Strata);
         let clear = if strata {
             self.void_color
         } else {
             self.aether_void_color
         };
+        let (window_alpha, window_tint) = if strata {
+            (1.0, [0.0; 4])
+        } else {
+            (self.aether_glass_alpha, self.aether_glass_tint)
+        };
 
         // Write each quad's own uniform up front so both passes read final values.
-        let mut draw_list: Vec<usize> = Vec::new();
+        // World Z is tracked so Aether can draw back-to-front for correct
+        // translucent compositing; Strata is opaque and order-independent.
+        let mut draw_list: Vec<(usize, f32)> = Vec::new();
         for (_id, (transform, wayland_surface)) in
             world.query::<(&Transform, &WaylandSurface)>().iter()
         {
@@ -597,11 +705,16 @@ impl WgpuState {
                         mvp: (view_proj * model).into(),
                         model: model.into(),
                         uv_scale: quad.uv_scale,
-                        _padding: [0.0; 2],
+                        alpha: window_alpha,
+                        _pad: 0.0,
+                        tint: window_tint,
                     }]),
                 );
-                draw_list.push(idx);
+                draw_list.push((idx, model.w.z));
             }
+        }
+        if !strata {
+            draw_list.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         }
 
         // Runs even with no windows, so the map is cleared to 1.0 (unoccluded)
@@ -637,7 +750,7 @@ impl WgpuState {
                 self.quad_pipeline.index_buffer.slice(..),
                 wgpu::IndexFormat::Uint16,
             );
-            for &idx in &draw_list {
+            for &(idx, _) in &draw_list {
                 let quad = &self.quads[idx].1;
                 shadow_pass.set_bind_group(1, &quad.shadow_bind_group, &[]);
                 shadow_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
@@ -645,13 +758,6 @@ impl WgpuState {
         }
 
         if strata {
-            let near_z = self.floor_half[1];
-            let grid_horizon_dist = if self.grid_depth <= 0.0 {
-                1.0e9
-            } else {
-                let far_z = near_z - self.grid_depth * 2.0 * self.floor_half[1];
-                self.camera.eye.z - far_z
-            };
             self.queue.write_buffer(
                 &self.grid_pipeline.uniform_buffer,
                 0,
@@ -662,10 +768,33 @@ impl WgpuState {
                     grid_color: self.grid_color,
                     void_color: self.void_color,
                     axis_color: self.axis_color,
-                    grid_half_width: self.floor_half[0] * self.grid_width,
-                    grid_horizon_dist,
+                    grid_extent: self.grid_extent,
+                    grid_level: self.grid_level,
                     grid_spacing: self.grid_spacing,
+                    fog_density: self.grid_fog_density,
                     enable_shadows: if self.enable_shadows { 1.0 } else { 0.0 },
+                    _pad: [0.0; 3],
+                }]),
+            );
+        }
+
+        if !strata {
+            let forward = (self.camera.target - self.camera.eye).normalize();
+            let right = forward.cross(self.camera.up).normalize();
+            let cam_up = right.cross(forward);
+            self.queue.write_buffer(
+                &self.particle_pipeline.uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[ParticleUniform {
+                    view_proj: view_proj.into(),
+                    camera_right: [right.x, right.y, right.z, 0.0],
+                    camera_up: [cam_up.x, cam_up.y, cam_up.z, 0.0],
+                    camera_eye: [self.camera.eye.x, self.camera.eye.y, self.camera.eye.z, 1.0],
+                    bg_color: self.aether_void_color,
+                    color: self.aether_particle_color,
+                    size: self.aether_particle_size,
+                    fog_density: self.aether_fog_density,
+                    _pad: [0.0; 2],
                 }]),
             );
         }
@@ -700,13 +829,22 @@ impl WgpuState {
                 multiview_mask: None,
             });
 
+            // Aether draws the particle field first (backdrop) so the windows
+            // and their translucency composite over it.
+            if !strata {
+                render_pass.set_pipeline(&self.particle_pipeline.pipeline);
+                render_pass.set_bind_group(0, &self.particle_pipeline.uniform_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.particle_instances.slice(..));
+                render_pass.draw(0..6, 0..self.particle_count);
+            }
+
             render_pass.set_pipeline(&self.quad_pipeline.pipeline);
             render_pass.set_vertex_buffer(0, self.quad_pipeline.vertex_buffer.slice(..));
             render_pass.set_index_buffer(
                 self.quad_pipeline.index_buffer.slice(..),
                 wgpu::IndexFormat::Uint16,
             );
-            for &idx in &draw_list {
+            for &(idx, _) in &draw_list {
                 let quad = &self.quads[idx].1;
                 render_pass.set_bind_group(0, &quad.bind_group, &[]);
                 render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
@@ -812,6 +950,7 @@ mod shader_tests {
     fn shaders_are_valid() {
         validate("quad.wgsl", include_str!("shaders/quad.wgsl"));
         validate("grid.wgsl", include_str!("shaders/grid.wgsl"));
+        validate("particles.wgsl", include_str!("shaders/particles.wgsl"));
         validate("shadow.wgsl", include_str!("shaders/shadow.wgsl"));
     }
 }

@@ -10,6 +10,16 @@ use crate::state::SpatilState;
 impl SpatilState {
     pub fn handle_pointer_motion(&mut self, position: PhysicalPosition<f64>) {
         self.pointer_location = (position.x, position.y).into();
+        // NDC cursor for the Aether parallax camera (y up). Physical position and
+        // surface config share the winit-window pixel space.
+        let (w, h) = (
+            self.wgpu_state.config.width.max(1) as f64,
+            self.wgpu_state.config.height.max(1) as f64,
+        );
+        self.wgpu_state.pointer_ndc = [
+            (position.x / w * 2.0 - 1.0) as f32,
+            (1.0 - position.y / h * 2.0) as f32,
+        ];
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };

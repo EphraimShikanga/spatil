@@ -57,6 +57,7 @@ impl SpatilState {
             Action::Hook(spec) => self.run_hook(&spec),
             Action::CloseWindow => self.close_focused_window(),
             Action::Quit => self.should_quit = true,
+            Action::ToggleScene => self.toggle_scene(),
         }
     }
 

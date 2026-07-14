@@ -248,6 +248,17 @@ impl SpatilState {
         }
     }
 
+    pub fn toggle_scene(&mut self) {
+        let next = match self.config.scene_graph.scene_mode() {
+            crate::scene::mode::SceneMode::Strata => "aether",
+            crate::scene::mode::SceneMode::Aether => "strata",
+        };
+        let mut config = self.config.clone();
+        config.scene_graph.mode = next.to_string();
+        tracing::info!("toggling scene to {next}");
+        self.apply_config(config);
+    }
+
     pub fn apply_config(&mut self, config: SpatilConfig) {
         self.keybindings = config.compile_keybindings();
 

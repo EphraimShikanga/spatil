@@ -7,6 +7,8 @@ pub enum Action {
     Hook(String),
     CloseWindow,
     Quit,
+    /// Switch the scene graph between Strata and Aether.
+    ToggleScene,
 }
 
 impl Action {
@@ -23,6 +25,7 @@ impl Action {
         match s {
             "close_window" | "close" => Some(Action::CloseWindow),
             "quit" | "exit" => Some(Action::Quit),
+            "toggle_scene" => Some(Action::ToggleScene),
             _ => None,
         }
     }

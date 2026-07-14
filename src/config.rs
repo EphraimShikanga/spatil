@@ -83,16 +83,20 @@ impl SceneGraph {
 #[serde(default)]
 pub struct Strata {
     pub enable_shadows: bool,
-    pub camera_pitch: f32,
+    pub camera_distance: f32,
+    pub camera_elevation: f32,
+    pub camera_orbit: f32,
     pub window_pitch: f32,
-    pub window_hover_height: f32,
+    pub window_base_y: f32,
+    pub window_base_z: f32,
     pub light_position: [f32; 3],
     pub grid_color: String,
     pub void_color: String,
     pub axis_color: String,
+    pub grid_level: f32,
+    pub grid_extent: f32,
     pub grid_spacing: f32,
-    pub grid_depth: f32,
-    pub grid_width: f32,
+    pub fog_density: f32,
     pub shadow_map_size: u32,
 }
 
@@ -100,16 +104,20 @@ impl Default for Strata {
     fn default() -> Self {
         Self {
             enable_shadows: true,
-            camera_pitch: -15.0,
-            window_pitch: 30.0,
-            window_hover_height: 0.5,
-            light_position: [-5.0, 10.0, 5.0],
-            grid_color: "#1E2D2F".to_string(),
+            camera_distance: 3.0,
+            camera_elevation: 0.0,
+            camera_orbit: 0.0,
+            window_pitch: 45.0,
+            window_base_y: -0.2,
+            window_base_z: -0.5,
+            light_position: [1.0, 2.0, 1.0],
+            grid_color: "#2A2A30".to_string(),
             void_color: "#0A0A0C".to_string(),
-            axis_color: "#4A6E72".to_string(),
-            grid_spacing: 0.05,
-            grid_depth: 1.5,
-            grid_width: 1.25,
+            axis_color: "#2A2A30".to_string(),
+            grid_level: -0.6,
+            grid_extent: 5.0,
+            grid_spacing: 0.2,
+            fog_density: 0.15,
             shadow_map_size: 2048,
         }
     }
@@ -119,9 +127,16 @@ impl Default for Strata {
 #[serde(default)]
 pub struct Aether {
     pub void_color: String,
-    pub dot_color: String,
-    pub dot_spacing: f32,
-    pub dot_radius: f32,
+    pub particle_color: String,
+    pub particle_count: u32,
+    pub particle_size: f32,
+    pub particle_opacity: f32,
+    pub field_width: f32,
+    pub field_height: f32,
+    pub field_depth: f32,
+    pub fog_density: f32,
+    pub camera_distance: f32,
+    pub parallax_enabled: bool,
     pub parallax_strength: f32,
     pub glass_alpha: f32,
     pub glass_tint: String,
@@ -133,13 +148,20 @@ impl Default for Aether {
     fn default() -> Self {
         Self {
             void_color: "#0F0F11".to_string(),
-            dot_color: "#D1D1D6".to_string(),
-            dot_spacing: 0.08,
-            dot_radius: 0.06,
-            parallax_strength: 0.5,
-            glass_alpha: 0.85,
+            particle_color: "#D1D1D6".to_string(),
+            particle_count: 2000,
+            particle_size: 0.015,
+            particle_opacity: 0.8,
+            field_width: 5.0,
+            field_height: 3.0,
+            field_depth: 8.0,
+            fog_density: 0.15,
+            camera_distance: 2.5,
+            parallax_enabled: true,
+            parallax_strength: 0.25,
+            glass_alpha: 0.95,
             glass_tint: "#12141A".to_string(),
-            glass_tint_strength: 0.25,
+            glass_tint_strength: 0.1,
             z_layer_gap: 0.35,
         }
     }
@@ -238,6 +260,7 @@ fn default_keybindings() -> HashMap<String, String> {
         ("Super+Return".to_string(), "exec alacritty".to_string()),
         ("Super+q".to_string(), "close_window".to_string()),
         ("Super+Shift+q".to_string(), "quit".to_string()),
+        ("Super+Tab".to_string(), "toggle_scene".to_string()),
     ])
 }
 
@@ -380,7 +403,7 @@ mod tests {
         assert_eq!(cfg.scene_graph.scene_mode(), SceneMode::Aether);
         assert_eq!(cfg.scene_graph.aether.z_layer_gap, 1.0);
         // Untouched sub-table keeps its defaults.
-        assert_eq!(cfg.scene_graph.strata.camera_pitch, -15.0);
+        assert_eq!(cfg.scene_graph.strata.camera_distance, 3.0);
         assert_eq!(cfg.scene_graph.aether.void_color, "#0F0F11");
     }
 
