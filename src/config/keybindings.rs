@@ -3,12 +3,11 @@ use smithay::input::keyboard::{Keysym, ModifiersState, xkb};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Exec(String),
-    /// Run a script from `~/.config/spatil/hooks/` (name plus optional args).
     Hook(String),
     CloseWindow,
     Quit,
-    /// Switch the scene graph between Strata and Aether.
     ToggleScene,
+    ChangeVt(i32),
 }
 
 impl Action {
@@ -21,6 +20,9 @@ impl Action {
         if let Some(spec) = s.strip_prefix("hook ") {
             let spec = spec.trim();
             return (!spec.is_empty()).then(|| Action::Hook(spec.to_string()));
+        }
+        if let Some(vt) = s.strip_prefix("change_vt ") {
+            return vt.trim().parse().ok().map(Action::ChangeVt);
         }
         match s {
             "close_window" | "close" => Some(Action::CloseWindow),
@@ -137,6 +139,8 @@ mod tests {
         );
         assert_eq!(Action::parse("close_window"), Some(Action::CloseWindow));
         assert_eq!(Action::parse("quit"), Some(Action::Quit));
+        assert_eq!(Action::parse("change_vt 2"), Some(Action::ChangeVt(2)));
+        assert_eq!(Action::parse("change_vt x"), None);
         assert_eq!(
             Action::parse("hook place_next.py --cols 4"),
             Some(Action::Hook("place_next.py --cols 4".to_string()))

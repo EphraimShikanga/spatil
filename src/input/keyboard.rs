@@ -25,8 +25,6 @@ impl SpatilState {
         self.dispatch_key(Keycode::new(scancode + 8), key_state);
     }
 
-    /// Matches keybindings inside the seat's `input` filter (using the seat's own xkb
-    /// modifier state); non-bound keys forward to the focused client.
     pub fn dispatch_key(&mut self, keycode: Keycode, key_state: KeyState) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
@@ -62,6 +60,7 @@ impl SpatilState {
             Action::CloseWindow => self.close_focused_window(),
             Action::Quit => self.should_quit = true,
             Action::ToggleScene => self.toggle_scene(),
+            Action::ChangeVt(vt) => self.change_vt(vt),
         }
     }
 

@@ -263,14 +263,20 @@ impl SpatilState {
         }
     }
 
-    pub fn tick_animations(&mut self) {
-        let now = std::time::Instant::now();
-        let dt_ms = ((now - self.last_frame).as_secs_f32() * 1000.0).min(50.0);
-        self.last_frame = now;
+    pub fn tick_animations(&mut self, dt_ms: f32) {
+        let dt_ms = dt_ms.min(50.0);
         for id in animation::update(&mut self.world, dt_ms) {
             self.wgpu_state.remove_texture(&id);
         }
         self.wgpu_state.scene_transition.tick(dt_ms);
+    }
+
+    /// CPU-clock frame delta (winit backend). DRM uses the vblank timestamp instead.
+    pub fn cpu_dt_ms(&mut self) -> f32 {
+        let now = std::time::Instant::now();
+        let dt = (now - self.last_frame).as_secs_f32() * 1000.0;
+        self.last_frame = now;
+        dt
     }
 
     pub fn next_window_id(&mut self) -> u32 {

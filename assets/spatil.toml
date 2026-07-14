@@ -26,6 +26,13 @@ width = 1920
 height = 1080
 refresh_rate = 60000   # in mHz; 60000 = 60 Hz
 
+# Native DRM backend only (ignored under the nested winit backend). Picks the
+# physical connector and mode; defaults auto-detect the primary connected output.
+[output]
+connector = "auto"     # "auto" (first connected) or a name, e.g. "eDP-1", "HDMI-A-1"
+mode = "auto"          # "auto" (preferred), "1920x1080", or "1920x1080@60"
+scale = 1
+
 [keyboard]
 repeat_rate = 25       # repeats per second
 repeat_delay = 200     # ms before repeat starts
@@ -135,3 +142,5 @@ exec = [
 "Super+Shift+q" = "quit"
 "Super+Tab" = "toggle_scene"
 # "Super+g" = "hook place_next.py"   # snap the next window you open to center
+# change_vt switches virtual terminals (DRM backend only), e.g. Ctrl+Alt+F2:
+# "Ctrl+Alt+F2" = "change_vt 2"

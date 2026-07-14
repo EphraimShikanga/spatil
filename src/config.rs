@@ -20,12 +20,31 @@ use crate::scene::mode::SceneMode;
 pub struct SpatilConfig {
     pub general: General,
     pub display: Display,
+    pub output: Output,
     pub keyboard: Keyboard,
     pub windows: Windows,
     pub scene_graph: SceneGraph,
     pub animation: Animation,
     pub autostart: Autostart,
     pub keybindings: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Output {
+    pub connector: String,
+    pub mode: String,
+    pub scale: i32,
+}
+
+impl Default for Output {
+    fn default() -> Self {
+        Self {
+            connector: "auto".to_string(),
+            mode: "auto".to_string(),
+            scale: 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -267,6 +286,7 @@ impl Default for SpatilConfig {
         Self {
             general: General::default(),
             display: Display::default(),
+            output: Output::default(),
             keyboard: Keyboard::default(),
             windows: Windows::default(),
             scene_graph: SceneGraph::default(),

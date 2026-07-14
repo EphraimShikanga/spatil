@@ -48,8 +48,6 @@ impl SpatilState {
     }
 }
 
-/// Builds an `AxisFrame` from a libinput axis event: v120 discrete steps for wheels,
-/// continuous values for finger/touchpad scroll, and stop markers when an axis ends.
 fn axis_frame(
     event: &<LibinputInputBackend as smithay::backend::input::InputBackend>::PointerAxisEvent,
     time: u32,

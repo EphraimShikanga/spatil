@@ -12,8 +12,6 @@ impl SpatilState {
         self.dispatch_pointer_motion_absolute(position.x, position.y);
     }
 
-    /// Updates the cursor location + Aether parallax NDC, raycasts the scene for the
-    /// surface under the cursor, and sends `wl_pointer` motion + frame.
     pub fn dispatch_pointer_motion_absolute(&mut self, x: f64, y: f64) {
         self.pointer_location = (x, y).into();
         // NDC cursor for the Aether parallax camera (y up), in output pixel space.
@@ -25,6 +23,7 @@ impl SpatilState {
             (x / w * 2.0 - 1.0) as f32,
             (1.0 - y / h * 2.0) as f32,
         ];
+        self.move_hw_cursor();
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
@@ -52,8 +51,6 @@ impl SpatilState {
         self.dispatch_pointer_button(button_code, button_state);
     }
 
-    /// Click-to-focus (raycast) plus the `wl_pointer` button + frame. `button_code`
-    /// is an evdev `BTN_*` code.
     pub fn dispatch_pointer_button(&mut self, button_code: u32, button_state: ButtonState) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
@@ -108,7 +105,6 @@ impl SpatilState {
         self.dispatch_pointer_axis(frame);
     }
 
-    /// Sends a fully-built `AxisFrame` + frame, each backend builds the frame itself.
     pub fn dispatch_pointer_axis(&mut self, frame: AxisFrame) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;

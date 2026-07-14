@@ -93,7 +93,8 @@ impl ApplicationHandler for SpatilApp {
             }
             WindowEvent::RedrawRequested => {
                 state.reveal_pending();
-                state.tick_animations();
+                let dt_ms = state.cpu_dt_ms();
+                state.tick_animations(dt_ms);
 
                 let surface = self.surface.as_ref().unwrap();
                 let surface_config = self.surface_config.as_mut().unwrap();
