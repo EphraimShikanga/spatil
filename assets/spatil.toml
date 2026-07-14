@@ -130,7 +130,7 @@ exec = [
 #
 # NOTE: defining this table replaces the built-in defaults entirely.
 [keybindings]
-"Super+Return" = "exec alacritty"
+"Super+Return" = "exec kitty"
 "Super+q" = "close_window"
 "Super+Shift+q" = "quit"
 "Super+Tab" = "toggle_scene"

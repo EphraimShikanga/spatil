@@ -279,7 +279,7 @@ impl Default for SpatilConfig {
 
 fn default_keybindings() -> HashMap<String, String> {
     HashMap::from([
-        ("Super+Return".to_string(), "exec alacritty".to_string()),
+        ("Super+Return".to_string(), "exec kitty".to_string()),
         ("Super+q".to_string(), "close_window".to_string()),
         ("Super+Shift+q".to_string(), "quit".to_string()),
         ("Super+Tab".to_string(), "toggle_scene".to_string()),

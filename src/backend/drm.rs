@@ -214,7 +214,11 @@ fn try_run(config: SpatilConfig) -> Result<(), String> {
 
     tracing::info!("DRM backend up; entering event loop");
     calloop
-        .run(None, &mut state, |_| {})
+        .run(None, &mut state, |state| {
+            if state.should_quit {
+                state.loop_signal.stop();
+            }
+        })
         .map_err(|e| format!("event loop: {e}"))?;
     Ok(())
 }
@@ -252,7 +256,7 @@ impl SpatilState {
         self.wgpu_state.render(&mut self.world, &view);
 
         // Scanout reads CPU-side on flip, so the GPU write must finish first. A DRM
-        // in-fence (milestone 4) will replace this blocking poll.
+        // in-fence will replace this blocking poll.
         if let Err(err) = self.wgpu_state.device.poll(wgpu::PollType::wait_indefinitely()) {
             tracing::error!("device poll failed: {err:?}");
             return;
