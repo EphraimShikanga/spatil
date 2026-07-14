@@ -17,6 +17,14 @@ pub struct ShadowMap {
 
 impl ShadowMap {
     pub fn new(device: &wgpu::Device, size: u32) -> Self {
+        // A 0-sized texture is invalid and panics wgpu; clamp and warn instead of
+        // crashing on a bad shadow_map_size. Use enable_shadows to turn shadows off.
+        let size = if size == 0 {
+            tracing::warn!("shadow_map_size = 0 is invalid; using 2048 (set enable_shadows=false to disable shadows)");
+            2048
+        } else {
+            size
+        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("shadow map"),
             size: wgpu::Extent3d {
