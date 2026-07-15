@@ -155,8 +155,9 @@ impl SpatilState {
                 {
                     Ok(feedback) => {
                         tracing::info!(
+                            modifiers = ?wgpu_state.dmabuf_modifiers,
                             "advertising zwp_linux_dmabuf_v1 v4 with feedback \
-                             (main_device set; Argb8888/Xrgb8888, Linear modifier)"
+                             (main_device set; Argb8888/Xrgb8888)"
                         );
                         dmabuf_state
                             .create_global_with_default_feedback::<Self>(&display_handle, &feedback)

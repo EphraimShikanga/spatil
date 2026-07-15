@@ -195,7 +195,13 @@ fn query_format_modifiers(
         }
 
         for prop in props {
-            if prop.drm_format_modifier_tiling_features.contains(tiling_feature) {
+            // Single-plane only: `texture_from_dmabuf_fd` imports one fd, so compressed
+            // (CCS) modifiers with auxiliary planes are unusable. Advertising one anyway
+            // makes clients allocate it, and the failed import kills them (create_immed
+            // must succeed or raise a fatal protocol error).
+            if prop.drm_format_modifier_plane_count == 1
+                && prop.drm_format_modifier_tiling_features.contains(tiling_feature)
+            {
                 modifiers.push(Modifier::from(prop.drm_format_modifier));
             }
         }
