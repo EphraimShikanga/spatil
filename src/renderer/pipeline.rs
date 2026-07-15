@@ -39,10 +39,25 @@ impl Camera {
         self.aspect = aspect;
     }
 
+    pub fn build_view_matrix(&self) -> Matrix4<f32> {
+        Matrix4::look_at_rh(self.eye, self.target, self.up)
+    }
+
     pub fn build_view_projection_matrix(&self) -> Matrix4<f32> {
-        let view = Matrix4::look_at_rh(self.eye, self.target, self.up);
         let proj = cgmath::perspective(Deg(self.fovy), self.aspect, self.znear, self.zfar);
-        OPENGL_TO_WGPU_MATRIX * proj * view
+        OPENGL_TO_WGPU_MATRIX * proj * self.build_view_matrix()
+    }
+
+    pub fn forward(&self) -> Vector3<f32> {
+        use cgmath::InnerSpace;
+        (self.target - self.eye).normalize()
+    }
+
+    pub fn screen_axes(&self) -> (Vector3<f32>, Vector3<f32>) {
+        use cgmath::InnerSpace;
+        let forward = self.forward();
+        let right = forward.cross(self.up).normalize();
+        (right, right.cross(forward))
     }
 
     pub fn build_inverse_view_projection_matrix(&self) -> Option<Matrix4<f32>> {
@@ -58,9 +73,9 @@ pub struct QuadUniform {
     pub model: [[f32; 4]; 4],
     pub uv_scale: [f32; 2],
     pub alpha: f32,
-    pub _pad: f32,
-    // rgb = tint (linear), a = tint strength. Zeroed in Strata (opaque, untinted).
+    pub border_width: f32,
     pub tint: [f32; 4],
+    pub border_color: [f32; 4],
 }
 
 #[repr(C)]

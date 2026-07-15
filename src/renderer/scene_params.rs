@@ -1,6 +1,29 @@
-use crate::config::{Aether, Display, Strata, parse_hex_color};
+use cgmath::Zero;
+
+use crate::config::{Aether, Display, Input, Strata, parse_hex_color};
 use crate::scene::WORLD_SCALE;
 use crate::scene::mode::CameraFraming;
+
+pub struct InteractionParams {
+    pub focus_border_color: [f32; 4],
+    pub focus_border_width: f32,
+    pub backdrop_dim_color: [f32; 4],
+}
+
+impl InteractionParams {
+    pub fn from_config(input: &Input) -> Self {
+        let dim = parse_hex_color(&input.backdrop_dim_color);
+        Self {
+            focus_border_color: parse_hex_color(&input.focus_border_color),
+            focus_border_width: if input.focus_border_enabled {
+                input.focus_border_width.max(0.0)
+            } else {
+                0.0
+            },
+            backdrop_dim_color: [dim[0], dim[1], dim[2], input.backdrop_dim.clamp(0.0, 1.0)],
+        }
+    }
+}
 
 pub struct StrataParams {
     pub grid_color: [f32; 4],
@@ -42,6 +65,7 @@ impl StrataParams {
             distance: self.camera_distance,
             elevation: self.camera_elevation,
             orbit: self.camera_orbit,
+            target: cgmath::Vector3::zero(),
         }
     }
 }

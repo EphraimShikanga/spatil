@@ -1,3 +1,4 @@
+pub mod drag;
 mod keyboard;
 mod libinput;
 mod pointer;

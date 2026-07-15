@@ -2,10 +2,13 @@ use std::time::Duration;
 
 use cgmath::Vector3;
 use hecs::{Entity, World};
-use crate::scene::components::{Transform, Parent, WaylandSurface};
 
-/// Strata layout: windows spread across columns in X, later rows stepping up and
-/// back so a tilted cluster fans out above the grid (relative to the group base).
+use crate::config::Direction;
+use crate::renderer::pipeline::Camera;
+use crate::scene::animation::Tween;
+use crate::scene::components::{Billboard, Parent, Transform, WaylandSurface};
+use crate::scene::mode::billboard_rotation;
+
 pub fn strata_window_placement(window_id: u32) -> Vector3<f32> {
     const COLS: u32 = 3;
     const SPACING_X: f32 = 0.9;
@@ -30,9 +33,6 @@ pub fn aether_window_placement(window_id: u32, z_layer_gap: f32) -> Vector3<f32>
     Vector3::new(x, y, z)
 }
 
-/// Reveals committed-but-hidden windows once map-postponement lapses: either no
-/// script is connected to place them, or the timeout since first commit expired.
-/// IPC commands reveal windows directly; this is the automatic fallback path.
 pub fn update_map_visibility(
     world: &mut World,
     has_ipc_clients: bool,
@@ -54,9 +54,83 @@ pub fn update_map_visibility(
     revealed
 }
 
-pub fn update_world_matrices(world: &mut World) {
+/// The visible window nearest `from` in `direction`, judged on the view plane.
+pub fn focus_in_direction(
+    world: &World,
+    camera: &Camera,
+    from: Entity,
+    direction: Direction,
+) -> Option<Entity> {
+    let Ok(origin) = world.get::<&Transform>(from).map(|t| t.translation) else {
+        return None;
+    };
+    let view = camera.build_view_matrix();
+    let project = |p: Vector3<f32>| {
+        let v = view * p.extend(1.0);
+        (v.x, v.y)
+    };
+
+    let candidates: Vec<_> = world
+        .query::<(&Transform, &WaylandSurface)>()
+        .iter()
+        .filter(|(entity, (_, surface))| {
+            *entity != from && surface.visible && !surface.closing
+        })
+        .map(|(entity, (transform, _))| (entity, project(transform.translation)))
+        .collect();
+
+    pick_in_direction(project(origin), &candidates, direction)
+}
+
+fn pick_in_direction(
+    origin: (f32, f32),
+    candidates: &[(Entity, (f32, f32))],
+    direction: Direction,
+) -> Option<Entity> {
+    /// How many times more a unit sideways costs than a unit ahead.
+    const OFF_AXIS_PENALTY: f32 = 2.0;
+    /// Roughly a 70-degree cone: anything wider is not in that direction at all.
+    const MIN_ALIGNMENT: f32 = 0.3;
+
+    let (ox, oy) = origin;
+    let (dx, dy) = direction.screen_step();
+
+    let mut forward: Option<(f32, Entity)> = None;
+    let mut wrapped: Option<(f32, Entity)> = None;
+    for &(entity, (x, y)) in candidates {
+        let (rx, ry) = (x - ox, y - oy);
+        let distance = (rx * rx + ry * ry).sqrt();
+        if distance < 1e-4 {
+            continue;
+        }
+        // The axis is a unit vector, so the dot is the signed distance along it and
+        // the cross magnitude the distance across
+        let along = rx * dx + ry * dy;
+        let across = (rx * dy - ry * dx).abs();
+        let alignment = along / distance;
+        if alignment > MIN_ALIGNMENT {
+            let score = along + across * OFF_AXIS_PENALTY;
+            if forward.is_none_or(|(best, _)| score < best) {
+                forward = Some((score, entity));
+            }
+        } else if alignment < -MIN_ALIGNMENT && wrapped.is_none_or(|(best, _)| -along > best) {
+            wrapped = Some((-along, entity));
+        }
+    }
+
+    forward.or(wrapped).map(|(_, entity)| entity)
+}
+
+pub fn update_world_matrices(world: &mut World, camera: &Camera) {
+    let facing = billboard_rotation(camera.eye, camera.target);
+
     // First pass: Compute local matrices
-    for (_entity, transform) in world.query_mut::<&mut Transform>() {
+    for (_entity, (transform, billboard, tween)) in
+        world.query_mut::<(&mut Transform, Option<&Billboard>, Option<&Tween>)>()
+    {
+        if billboard.is_some() && tween.is_none() {
+            transform.rotation = facing;
+        }
         let translation = cgmath::Matrix4::from_translation(transform.translation);
         let rotation = cgmath::Matrix4::from(transform.rotation);
         let scale = cgmath::Matrix4::from_nonuniform_scale(
@@ -83,5 +157,61 @@ pub fn update_world_matrices(world: &mut World) {
         if let Ok(transform) = world.query_one_mut::<&mut Transform>(entity) {
             transform.world_matrix = new_world_matrix;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scene() -> (World, Vec<Entity>) {
+        let mut world = World::new();
+        // origin, right, far-right, up, left
+        let positions = [(0.0, 0.0), (1.0, 0.0), (5.0, 0.0), (0.0, 1.0), (-1.0, 0.0)];
+        let entities = positions.iter().map(|_| world.spawn(())).collect();
+        (world, entities)
+    }
+
+    fn at(entities: &[Entity], coords: &[(f32, f32)]) -> Vec<(Entity, (f32, f32))> {
+        entities[1..].iter().copied().zip(coords[1..].iter().copied()).collect()
+    }
+
+    const COORDS: [(f32, f32); 5] =
+        [(0.0, 0.0), (1.0, 0.0), (5.0, 0.0), (0.0, 1.0), (-1.0, 0.0)];
+
+    #[test]
+    fn picks_the_nearest_window_on_the_requested_axis() {
+        let (_world, e) = scene();
+        let candidates = at(&e, &COORDS);
+        assert_eq!(pick_in_direction(COORDS[0], &candidates, Direction::Right), Some(e[1]));
+        assert_eq!(pick_in_direction(COORDS[0], &candidates, Direction::Up), Some(e[3]));
+        assert_eq!(pick_in_direction(COORDS[0], &candidates, Direction::Left), Some(e[4]));
+    }
+
+    #[test]
+    fn straight_ahead_beats_nearer_but_off_axis() {
+        let (mut world, _) = scene();
+        let ahead = world.spawn(());
+        let sideways = world.spawn(());
+        // `sideways` is closer in a straight line but almost 45 degrees off.
+        let candidates = [(ahead, (3.0, 0.0)), (sideways, (1.4, 1.4))];
+        assert_eq!(pick_in_direction((0.0, 0.0), &candidates, Direction::Right), Some(ahead));
+    }
+
+    #[test]
+    fn wraps_around_when_nothing_lies_that_way() {
+        let (_world, e) = scene();
+        // Everything is to the right of the far-right window, so going right from
+        // it wraps to the furthest window the other way rather than dead-ending.
+        let candidates: Vec<_> = [0, 1, 3, 4]
+            .iter()
+            .map(|&i| (e[i], COORDS[i]))
+            .collect();
+        assert_eq!(pick_in_direction(COORDS[2], &candidates, Direction::Right), Some(e[4]));
+    }
+
+    #[test]
+    fn an_empty_scene_has_nothing_to_focus() {
+        assert_eq!(pick_in_direction((0.0, 0.0), &[], Direction::Left), None);
     }
 }

@@ -106,6 +106,53 @@ enabled = true
 switch_ms = 500     # scene-switch choreography (ms)
 open_ms = 250       # window open animation (ms)
 close_ms = 220      # window close animation (ms)
+present_ms = 280    # present/dismiss/fullscreen animation, and the backdrop dim (ms)
+# Physics for thrown windows and the smoothed camera. `damping` is the fraction of
+# a throw's speed left after one second: lower stops it sooner (0.02 = brisk).
+# The spring settles the grab-lift on release and smooths camera moves; stiffness
+# is how hard it pulls, damping how much it resists overshoot. Roughly, damping
+# near 2*sqrt(stiffness) settles without a bounce, below it bounces.
+damping = 0.02
+spring_stiffness = 220.0
+spring_damping = 22.0
+
+# World interaction: how you drag windows around the 3D world and move the camera.
+#
+# Nothing here happens unless `world_modifier` is held -- without it every pointer
+# event goes to the application untouched, so apps keep working normally.
+#
+#   <mod> + Left-drag            move the window on the plane parallel to your
+#                                screen (left/right, up/down, every diagonal)
+#   <mod> + Right-drag           push the window away / pull it closer
+#   <mod> + Middle-drag          orbit the world around what you are looking at
+#   <mod> + Shift + Middle-drag  pan: slide what you are looking at
+#   <mod> + scroll               push/pull the window during a drag; otherwise
+#                                zoom TOWARD THE CURSOR -- point at something far
+#                                away and scroll to travel to it
+#
+# Orbit, pan and zoom all work in BOTH scenes. Together they reach any viewpoint:
+# pan puts the pivot on the thing you care about, orbit swings around it (so you
+# can see its back), and zoom closes the distance. `look_at` over the IPC socket
+# jumps the camera to an explicit coordinate.
+#
+# Windows stay exactly where you put them -- there is no snapping and no layout
+# grid. Placement is remembered per scene, so flipping strata⇄aether and back
+# restores each mode's arrangement instead of resetting it. Release with a flick
+# to throw a window; it glides on and damps to rest where it lands.
+[input]
+world_modifier = "Super"      # Super | Ctrl | Alt | Shift (aliases as in [keybindings])
+orbit_speed = 0.005           # radians of orbit per pixel dragged
+pan_speed = 0.002             # world units panned per pixel dragged
+zoom_speed = 0.1              # fraction of the camera distance per scroll notch
+drag_depth_speed = 0.05       # world units of push/pull per scroll notch or pixel
+move_step = 0.25              # world units the "move_window <dir>" action shoves
+invert_scroll_zoom = false    # flip the scroll direction for zoom and depth
+focus_border_enabled = true   # outline the keyboard-focused window
+focus_border_color = "#4A90E2"
+focus_border_width = 0.004    # world units (not pixels), so it stays even on both axes
+backdrop_dim = 0.55           # how far the world darkens behind a presented window
+backdrop_dim_color = "#000000"
+present_fill = 0.8            # fraction of the screen a presented window covers
 
 # Autostart: commands run once when Spatil starts, via `sh -c`. The working
 # directory is this config dir, so a relative path like "hooks/auto_place.py"
@@ -134,11 +181,55 @@ exec = [
 #   "close_window"   — close the focused window.
 #   "quit"           — exit the compositor.
 #   "toggle_scene"   — switch between the Strata and Aether scene graphs.
+#   "set_scene <strata|aether>" — switch to that scene explicitly.
+#   "focus <left|right|up|down>" — focus the nearest window that way, as seen.
+#   "move_window <left|right|up|down>" — shove the focused window a step that way.
+#   "pan <left|right|up|down>" — slide the camera across the view plane.
+#   "present"        — bring the focused window forward at a comfortable working
+#                      size and dim the world behind it; press again to dismiss.
+#                      The window is re-configured at the larger size (not just
+#                      magnified), so text stays sharp. Click the dimmed world to
+#                      dismiss too.
+#   "dismiss"        — leave the presented state. Bind this to a bare key at your
+#                      own risk: a bound key is ALWAYS taken from the app, which is
+#                      why Escape is not bound to it by default.
+#   "fullscreen"     — toggle real xdg fullscreen (apps can also request it).
+#   "zoom <in|out>" / "reset_view" — move the camera / ease it back to default.
+#   "orbit <left|right|up|down>" — nudge the camera around the world.
+#   "tilt <up|down>" — recline the windows more or less (strata only; live).
 #
 # NOTE: defining this table replaces the built-in defaults entirely.
 [keybindings]
 "Super+Return" = "exec kitty"
+"Super+e" = "exec dolphin"
+"Super+w" = "exec zen-browser"
+"Super+z" = "exec zeditor"
+"Super+t" = "exec antigravity-ide"
 "Super+q" = "close_window"
 "Super+Shift+q" = "quit"
 "Super+Tab" = "toggle_scene"
+"Super+Left" = "focus left"
+"Super+Right" = "focus right"
+"Super+Up" = "focus up"
+"Super+Down" = "focus down"
+"Super+Shift+Left" = "move_window left"
+"Super+Shift+Right" = "move_window right"
+"Super+Shift+Up" = "move_window up"
+"Super+Shift+Down" = "move_window down"
+"Super+space" = "present"
+"Super+f" = "fullscreen"
+"Super+Shift+h" = "pan left"
+"Super+Shift+l" = "pan right"
+"Super+Shift+k" = "pan up"
+"Super+Shift+j" = "pan down"
+"Super+equal" = "zoom in"
+"Super+minus" = "zoom out"
+"Super+0" = "reset_view"
+"Super+bracketleft" = "orbit left"
+"Super+bracketright" = "orbit right"
+"Super+Prior" = "tilt up"      # Page Up
+"Super+Next" = "tilt down"     # Page Down
+# Escape is deliberately NOT bound to "dismiss": presenting vim and pressing Escape
+# should change vim's mode, not throw the window back. Dismiss with Super+space
+# again, or by clicking the dimmed world behind it.
 # "Super+g" = "hook place_next.py"   # snap the next window you open to center

@@ -1,4 +1,5 @@
 pub mod client;
+pub mod presentation;
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
@@ -6,12 +7,15 @@ use std::time::Instant;
 
 use std::time::Duration;
 
+use cgmath::Vector3;
+
 use crate::config::{Action, KeyCombo, SpatilConfig};
+use crate::input::drag::{Drag, Navigate};
 use crate::renderer::WgpuState;
 use crate::scene::WORLD_SCALE;
-use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete};
-use crate::scene::components::{Transform, WaylandSurface};
-use crate::scene::mode::default_transform;
+use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete, Physics, Tween};
+use crate::scene::components::{Billboard, Placement, Transform, WaylandSurface};
+use crate::scene::mode::{SceneMode, default_transform};
 use crate::scene::systems::update_map_visibility;
 use smithay::backend::allocator::{Format, Fourcc};
 use smithay::input::keyboard::XkbConfig;
@@ -27,6 +31,20 @@ use smithay::output::{Mode, Output, PhysicalProperties, Subpixel, Scale};
 use smithay::wayland::shell::xdg::{ToplevelSurface, XdgShellState};
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::xdg_activation::XdgActivationState;
+
+fn component_mul(a: Vector3<f32>, b: Vector3<f32>) -> Vector3<f32> {
+    Vector3::new(a.x * b.x, a.y * b.y, a.z * b.z)
+}
+
+/// Guards a zero denominator, which a never-committed window's tween can hold.
+fn component_ratio(target: Vector3<f32>, current: Vector3<f32>) -> Vector3<f32> {
+    let ratio = |t: f32, c: f32| if c.abs() < 1e-6 { 1.0 } else { t / c };
+    Vector3::new(
+        ratio(target.x, current.x),
+        ratio(target.y, current.y),
+        1.0,
+    )
+}
 
 fn env_flag(name: &str) -> bool {
     std::env::var(name).ok().is_some_and(|v| {
@@ -62,6 +80,8 @@ pub struct SpatilState {
     pub should_quit: bool,
     pub last_frame: std::time::Instant,
     pub drm: Option<crate::backend::drm::DrmOutput>,
+    pub drag: Option<Drag>,
+    pub navigate: Option<Navigate>,
     window_id_counter: u32,
 }
 
@@ -210,6 +230,8 @@ impl SpatilState {
             should_quit: false,
             last_frame: std::time::Instant::now(),
             drm: None,
+            drag: None,
+            navigate: None,
             window_id_counter: 1,
         }
     }
@@ -269,7 +291,23 @@ impl SpatilState {
         for id in animation::update(&mut self.world, dt_ms) {
             self.wgpu_state.remove_texture(&id);
         }
+        let physics = self.physics();
+        animation::integrate(&mut self.world, dt_ms, physics);
+        self.wgpu_state.camera_controller.tick(dt_ms, physics);
         self.wgpu_state.scene_transition.tick(dt_ms);
+        self.tick_backdrop(dt_ms);
+        // Derived, not latched: a Presented window that is *closed* rather than
+        // dismissed would otherwise leave the parallax frozen for good.
+        self.wgpu_state.parallax_frozen =
+            self.drag.is_some() || self.navigate.is_some() || self.world_is_modal();
+    }
+
+    fn physics(&self) -> Physics {
+        Physics {
+            damping: self.config.animation.damping,
+            spring_stiffness: self.config.animation.spring_stiffness,
+            spring_damping: self.config.animation.spring_damping,
+        }
     }
 
     /// CPU-clock frame delta (winit backend). DRM uses the vblank timestamp instead.
@@ -301,6 +339,14 @@ impl SpatilState {
         }
     }
 
+    pub fn entity_for_surface(&self, surface_id: &ObjectId) -> Option<hecs::Entity> {
+        self.world
+            .query::<&WaylandSurface>()
+            .iter()
+            .find(|(_, s)| &s.id == surface_id && !s.closing)
+            .map(|(entity, _)| entity)
+    }
+
     pub fn mark_committed(&mut self, surface_id: &ObjectId) -> Option<u32> {
         for (_entity, surface) in self.world.query_mut::<&mut WaylandSurface>() {
             if &surface.id == surface_id && surface.committed_at.is_none() {
@@ -311,26 +357,59 @@ impl SpatilState {
         None
     }
 
+    /// Scale follows the committed buffer, never the config; an in-flight tween has
+    /// its endpoints rescaled rather than clobbering it
     pub fn set_window_size(&mut self, surface_id: &ObjectId, width: u32, height: u32) {
-        for (_entity, (transform, surface)) in
-            self.world.query_mut::<(&mut Transform, &WaylandSurface)>()
+        let scale = Vector3::new(
+            width as f32 / WORLD_SCALE,
+            height as f32 / WORLD_SCALE,
+            1.0,
+        );
+        for (_entity, (transform, surface, tween)) in
+            self.world
+                .query_mut::<(&mut Transform, &WaylandSurface, Option<&mut Tween>)>()
         {
-            if &surface.id == surface_id {
-                transform.scale.x = width as f32 / WORLD_SCALE;
-                transform.scale.y = height as f32 / WORLD_SCALE;
-                return;
+            if &surface.id != surface_id {
+                continue;
             }
+            if let Some(tween) = tween {
+                let ratio = component_ratio(scale, tween.end.scale);
+                tween.start.scale = component_mul(tween.start.scale, ratio);
+                tween.end.scale = component_mul(tween.end.scale, ratio);
+            }
+            transform.scale.x = scale.x;
+            transform.scale.y = scale.y;
+            return;
         }
     }
 
     pub fn toggle_scene(&mut self) {
         let next = match self.config.scene_graph.scene_mode() {
-            crate::scene::mode::SceneMode::Strata => "aether",
-            crate::scene::mode::SceneMode::Aether => "strata",
+            SceneMode::Strata => SceneMode::Aether,
+            SceneMode::Aether => SceneMode::Strata,
         };
+        self.set_scene(next);
+    }
+
+    pub fn set_scene(&mut self, mode: SceneMode) {
+        if self.config.scene_graph.scene_mode() == mode {
+            return;
+        }
         let mut config = self.config.clone();
-        config.scene_graph.mode = next.to_string();
-        tracing::info!("toggling scene to {next}");
+        config.scene_graph.mode = mode.as_str().to_string();
+        tracing::info!("switching scene to {}", mode.as_str());
+        self.apply_config(config);
+    }
+
+    /// Routed through `apply_config`, i.e. the same path a same-mode reload takes.
+    pub fn tilt_windows(&mut self, degrees: f32) {
+        if self.config.scene_graph.scene_mode() != SceneMode::Strata {
+            tracing::info!("tilt only applies in strata; aether panes billboard");
+            return;
+        }
+        let mut config = self.config.clone();
+        let pitch = (config.scene_graph.strata.window_pitch + degrees).clamp(0.0, 89.0);
+        config.scene_graph.strata.window_pitch = pitch;
         self.apply_config(config);
     }
 
@@ -358,29 +437,55 @@ impl SpatilState {
 
         let old_mode = self.wgpu_state.scene_mode;
         self.wgpu_state
-            .apply_scene_config(&config.scene_graph, &config.display);
+            .apply_scene_config(&config.scene_graph, &config.display, &config.input);
         let new_mode = config.scene_graph.scene_mode();
         let mode_changed = old_mode != new_mode;
+
+        if mode_changed {
+            for entity in self.placeable_entities() {
+                self.remember_placement_in(entity, old_mode);
+            }
+        }
+
+        let facing = self.wgpu_state.facing_rotation(new_mode);
+
+        // A window hand-placed in the target mode goes back exactly where the user
+        // left it; only one that has never been there gets laid out.
+        let mut plans = Vec::new();
+        for (entity, (transform, surface, placement)) in
+            self.world
+                .query::<(&Transform, &WaylandSurface, Option<&Placement>)>()
+                .iter()
+        {
+            if surface.closing {
+                continue;
+            }
+            let start = AnimSnapshot::of(transform);
+            let mut end = start;
+            match placement.and_then(|p| p.get(new_mode)) {
+                Some(remembered) => {
+                    end.translation = remembered.translation;
+                    end.rotation = remembered.rotation;
+                }
+                None => {
+                    let target =
+                        default_transform(new_mode, surface.window_id, &config.scene_graph, facing);
+                    end.rotation = target.rotation;
+                    // A same-mode reload keeps translation so IPC-set and
+                    // hand-placed positions survive a live pitch or colour edit.
+                    if mode_changed {
+                        end.translation = target.translation;
+                    }
+                }
+            }
+            plans.push((entity, start, end));
+        }
 
         if mode_changed && config.animation.enabled {
             self.wgpu_state
                 .scene_transition
                 .start(old_mode, new_mode, config.animation.switch_ms);
             let switch_ms = config.animation.switch_ms;
-            let mut plans = Vec::new();
-            for (entity, (transform, surface)) in
-                self.world.query_mut::<(&Transform, &WaylandSurface)>()
-            {
-                if surface.closing {
-                    continue;
-                }
-                let target = default_transform(new_mode, surface.window_id, &config.scene_graph);
-                let start = AnimSnapshot::of(transform);
-                let mut end = start;
-                end.translation = target.translation;
-                end.rotation = target.rotation;
-                plans.push((entity, start, end));
-            }
             for (entity, start, end) in plans {
                 animation::tween_entity(
                     &mut self.world,
@@ -393,20 +498,61 @@ impl SpatilState {
                 );
             }
         } else {
-            // Scale is preserved (it comes from the committed buffer) so a same-mode
-            // reload keeps translation too, so IPC-set positions survive.
-            for (_entity, (transform, surface)) in
-                self.world.query_mut::<(&mut Transform, &WaylandSurface)>()
-            {
-                let target = default_transform(new_mode, surface.window_id, &config.scene_graph);
-                transform.rotation = target.rotation;
-                if mode_changed {
-                    transform.translation = target.translation;
+            for (entity, _, end) in plans {
+                if let Ok(transform) = self.world.query_one_mut::<&mut Transform>(entity) {
+                    // Scale is the committed buffer's, never the config's.
+                    transform.translation = end.translation;
+                    transform.rotation = end.rotation;
                 }
             }
         }
 
+        if mode_changed {
+            self.apply_billboards(new_mode);
+        }
+
         self.config = config;
         tracing::info!("configuration reloaded");
+    }
+
+    /// Aether panes billboard; Strata windows hold their pitch; a raised window is
+    /// posed by the presentation path and opts out of both.
+    pub fn apply_billboards(&mut self, mode: SceneMode) {
+        let raised = self.modal_window().map(|(entity, _)| entity);
+        let entities: Vec<_> = self
+            .world
+            .query::<&WaylandSurface>()
+            .iter()
+            .map(|(entity, _)| entity)
+            .collect();
+        for entity in entities {
+            if mode == SceneMode::Aether && Some(entity) != raised {
+                let _ = self.world.insert_one(entity, Billboard);
+            } else {
+                let _ = self.world.remove_one::<Billboard>(entity);
+            }
+        }
+    }
+
+    fn placeable_entities(&self) -> Vec<hecs::Entity> {
+        self.world
+            .query::<&WaylandSurface>()
+            .iter()
+            .filter(|(_, s)| !s.closing)
+            .map(|(entity, _)| entity)
+            .collect()
+    }
+
+    pub fn remember_placement_in(&mut self, entity: hecs::Entity, mode: SceneMode) {
+        let Ok(snapshot) = self.world.get::<&Transform>(entity).map(|t| AnimSnapshot::of(&t)) else {
+            return;
+        };
+        if let Ok(mut placement) = self.world.get::<&mut Placement>(entity) {
+            placement.set(mode, snapshot);
+            return;
+        }
+        let mut placement = Placement::default();
+        placement.set(mode, snapshot);
+        let _ = self.world.insert_one(entity, placement);
     }
 }

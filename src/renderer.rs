@@ -1,3 +1,4 @@
+pub mod backdrop;
 pub mod dmabuf;
 pub mod grid;
 pub mod particles;
@@ -9,23 +10,25 @@ pub mod texture;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cgmath::{InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
+use cgmath::{EuclideanSpace, InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
 use wgpu::{Device, Queue};
 use winit::window::Window;
 
 use smithay::backend::allocator::Modifier;
 use smithay::reexports::wayland_server::backend::ObjectId;
 
-use crate::config::{Display, SceneGraph, SpatilConfig};
+use crate::config::{Display, Input, SceneGraph, SpatilConfig};
 use crate::scene::animation::SceneTransition;
-use crate::scene::components::{Transform, WaylandSurface};
+use crate::scene::camera_controller::CameraController;
+use crate::scene::components::{Presentation, Transform, WaylandSurface, WindowState};
 use crate::scene::mode::{self, AetherView, SceneMode};
 use crate::scene::systems::update_world_matrices;
 
+use backdrop::{BackdropPipeline, BackdropUniform};
 use grid::{GridPipeline, GridUniform};
 use particles::{ParticlePipeline, ParticleUniform};
 use pipeline::{Camera, OPENGL_TO_WGPU_MATRIX, QuadPipeline, QuadUniform};
-use scene_params::{AetherParams, StrataParams};
+use scene_params::{AetherParams, InteractionParams, StrataParams};
 use shadow::{LightUniform, ShadowMap, ShadowPipeline};
 use texture::TexturedQuad;
 
@@ -113,12 +116,18 @@ pub struct WgpuState {
     pub particle_instances: wgpu::Buffer,
     pub shadow_pipeline: ShadowPipeline,
     pub shadow_map: ShadowMap,
+    pub backdrop_pipeline: BackdropPipeline,
     pub camera: Camera,
+    pub camera_controller: CameraController,
     pub scene_mode: SceneMode,
     pub scene_transition: SceneTransition,
     pub pointer_ndc: [f32; 2],
+    pub parallax_frozen: bool,
+    pub backdrop_dim: f32,
+    pub focused_surface: Option<ObjectId>,
     pub strata: StrataParams,
     pub aether: AetherParams,
+    pub interaction: InteractionParams,
     pub quads: Vec<(ObjectId, TexturedQuad)>,
     pub dmabuf_textures: HashMap<ObjectId, (wgpu::Texture, u32, u32, [f32; 2])>,
     pub main_device_id: Option<u64>,
@@ -200,12 +209,14 @@ impl WgpuState {
         let scene_mode = scene.scene_mode();
         let strata = StrataParams::from_config(&scene.strata, &config.display);
         let aether = AetherParams::from_config(&scene.aether);
+        let interaction = InteractionParams::from_config(&config.input);
 
         let quad_pipeline = QuadPipeline::new(&device, format);
         let shadow_pipeline = ShadowPipeline::new(&device);
         let shadow_map = ShadowMap::new(&device, scene.strata.shadow_map_size);
         let grid_pipeline = GridPipeline::new(&device, format, &shadow_map);
         let particle_pipeline = ParticlePipeline::new(&device, format);
+        let backdrop_pipeline = BackdropPipeline::new(&device, format);
         let particle_positions = particles::generate_particles(
             aether.particle_count,
             aether.field[0],
@@ -242,12 +253,18 @@ impl WgpuState {
             particle_instances,
             shadow_pipeline,
             shadow_map,
+            backdrop_pipeline,
             camera,
+            camera_controller: CameraController::default(),
             scene_mode,
             scene_transition: SceneTransition::idle(),
             pointer_ndc: [0.0, 0.0],
+            parallax_frozen: false,
+            backdrop_dim: 0.0,
+            focused_surface: None,
             strata,
             aether,
+            interaction,
             quads: Vec::new(),
             dmabuf_textures: HashMap::new(),
             main_device_id,
@@ -255,9 +272,10 @@ impl WgpuState {
         }
     }
 
-    pub fn apply_scene_config(&mut self, scene: &SceneGraph, display: &Display) {
+    pub fn apply_scene_config(&mut self, scene: &SceneGraph, display: &Display, input: &Input) {
         self.scene_mode = scene.scene_mode();
         self.strata = StrataParams::from_config(&scene.strata, display);
+        self.interaction = InteractionParams::from_config(input);
 
         // Regenerate the point cloud only when its shape changed, so unrelated
         // edits don't reshuffle the stars.
@@ -273,7 +291,9 @@ impl WgpuState {
         }
         self.aether = aether;
 
-        mode::frame_camera(self.scene_mode, &mut self.camera, &self.strata.camera_framing());
+        let mut camera = self.camera;
+        self.frame_for(&mut camera, self.scene_mode);
+        self.camera = camera;
     }
 
     /// Resizes the render targets (winit resize / DRM mode-set): reallocates depth
@@ -344,19 +364,50 @@ impl WgpuState {
     }
 
     fn frame_for(&self, camera: &mut Camera, mode: SceneMode) {
+        let parallax = if self.parallax_frozen { 0.0 } else { self.aether.parallax() };
+        self.frame_with(camera, mode, parallax);
+    }
+
+    fn frame_with(&self, camera: &mut Camera, mode: SceneMode, parallax: f32) {
+        let (yaw, pitch, pan, zoom) = self.camera_controller.smoothed();
         match mode {
             SceneMode::Strata => {
-                mode::frame_camera(SceneMode::Strata, camera, &self.strata.camera_framing())
+                let mut framing = self.strata.camera_framing();
+                framing.distance *= zoom;
+                framing.orbit += yaw;
+                framing.elevation += pitch;
+                framing.target = pan;
+                mode::frame_camera(SceneMode::Strata, camera, &framing)
             }
             SceneMode::Aether => mode::frame_aether(
                 camera,
                 &AetherView {
-                    distance: self.aether.camera_distance,
+                    distance: self.aether.camera_distance * zoom,
                     pointer_ndc: self.pointer_ndc,
-                    parallax_strength: self.aether.parallax(),
+                    parallax_strength: parallax,
+                    target: pan,
+                    orbit: yaw,
+                    elevation: pitch,
                 },
             ),
         }
+    }
+
+    fn settled_camera(&self, mode: SceneMode) -> Camera {
+        let mut camera = self.camera;
+        self.frame_with(&mut camera, mode, 0.0);
+        camera
+    }
+
+    pub fn facing_rotation(&self, mode: SceneMode) -> cgmath::Quaternion<f32> {
+        let camera = self.settled_camera(mode);
+        mode::billboard_rotation(camera.eye, camera.target)
+    }
+
+    pub fn fit_placement(&self, mode: SceneMode, height: f32, fill: f32) -> Vector3<f32> {
+        let camera = self.settled_camera(mode);
+        let distance = mode::fit_distance(camera.fovy, height, fill);
+        camera.eye.to_vec() + camera.forward() * distance
     }
 
     fn scene_presence(&self) -> f32 {
@@ -373,8 +424,6 @@ impl WgpuState {
     /// Draws one frame into `view` (a winit swapchain image or a DRM scanout texture)
     /// and submits it. The backend owns acquire/present; this never touches a `Surface`.
     pub fn render(&mut self, world: &mut hecs::World, view: &wgpu::TextureView) {
-        update_world_matrices(world);
-
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -382,10 +431,6 @@ impl WgpuState {
             });
 
         let presence = self.scene_presence();
-        let field_alpha = presence;
-        let grid_alpha = 1.0 - presence;
-        let draw_particles = field_alpha > 0.001;
-        let draw_grid = grid_alpha > 0.001;
 
         if self.scene_transition.active {
             let p = self.scene_transition.eased();
@@ -403,6 +448,22 @@ impl WgpuState {
             self.camera = c;
         }
 
+        // After the camera, because billboards are turned to face it.
+        update_world_matrices(world, &self.camera);
+
+        // A fullscreen window is the whole picture: the world behind is not dimmed,
+        // it is not drawn.
+        let world_hidden = world
+            .query::<(&Presentation, &WaylandSurface)>()
+            .iter()
+            .any(|(_, (p, s))| p.state == WindowState::Fullscreen && s.visible);
+        let field_alpha = if world_hidden { 0.0 } else { presence };
+        let grid_alpha = if world_hidden { 0.0 } else { 1.0 - presence };
+        let draw_particles = field_alpha > 0.001;
+        let draw_grid = grid_alpha > 0.001;
+        let dim = self.backdrop_dim * self.interaction.backdrop_dim_color[3];
+        let draw_backdrop = dim > 0.001 && !world_hidden;
+
         let view_proj = self.camera.build_view_projection_matrix();
         let inv_view_proj = self
             .camera
@@ -417,18 +478,31 @@ impl WgpuState {
         // Each quad writes its own uniform buffer so both the shadow and color
         // passes read final values without a mid-pass rewrite.
         let mut draw_list: Vec<(usize, f32)> = Vec::new();
-        for (_id, (transform, wayland_surface)) in
-            world.query::<(&Transform, &WaylandSurface)>().iter()
+        let mut modal_list: Vec<usize> = Vec::new();
+        for (_id, (transform, wayland_surface, presentation)) in world
+            .query::<(&Transform, &WaylandSurface, Option<&Presentation>)>()
+            .iter()
         {
             if !wayland_surface.visible {
                 continue;
             }
+            let state = presentation.map_or(WindowState::Ambient, |p| p.state);
+            let modal = state != WindowState::Ambient;
+            if world_hidden && !modal {
+                continue;
+            }
+            // Aether's glass would let the clear colour bleed through the pane.
+            let alpha = if state == WindowState::Fullscreen { 1.0 } else { window_alpha };
             if let Some(idx) = self
                 .quads
                 .iter()
                 .position(|(qid, _)| *qid == wayland_surface.id)
             {
                 let model = transform.world_matrix;
+                let focused = self
+                    .focused_surface
+                    .as_ref()
+                    .is_some_and(|id| *id == wayland_surface.id);
                 let quad = &self.quads[idx].1;
                 self.queue.write_buffer(
                     &quad.uniform_buffer,
@@ -437,12 +511,21 @@ impl WgpuState {
                         mvp: (view_proj * model).into(),
                         model: model.into(),
                         uv_scale: quad.uv_scale,
-                        alpha: window_alpha * transform.opacity,
-                        _pad: 0.0,
+                        alpha: alpha * transform.opacity,
+                        border_width: if focused {
+                            self.interaction.focus_border_width
+                        } else {
+                            0.0
+                        },
                         tint: window_tint,
+                        border_color: self.interaction.focus_border_color,
                     }]),
                 );
-                draw_list.push((idx, model.w.z));
+                if modal {
+                    modal_list.push(idx);
+                } else {
+                    draw_list.push((idx, model.w.z));
+                }
             }
         }
         // Back-to-front so translucent windows composite correctly.
@@ -512,8 +595,17 @@ impl WgpuState {
             );
         }
 
+        if draw_backdrop {
+            let [r, g, b, _] = self.interaction.backdrop_dim_color;
+            self.queue.write_buffer(
+                &self.backdrop_pipeline.uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[BackdropUniform { color: [r, g, b, dim] }]),
+            );
+        }
+
         if draw_particles {
-            let forward = (self.camera.target - self.camera.eye).normalize();
+            let forward = self.camera.forward();
             let right = forward.cross(self.camera.up).normalize();
             let cam_up = right.cross(forward);
             self.queue.write_buffer(
@@ -590,6 +682,28 @@ impl WgpuState {
                 render_pass.set_bind_group(1, &self.grid_pipeline.shadow_bind_group, &[]);
                 render_pass.draw(0..3, 0..1);
             }
+
+            // The world is complete; darken all of it, then the modal window draws
+            // on top undimmed.
+            if draw_backdrop {
+                render_pass.set_pipeline(&self.backdrop_pipeline.pipeline);
+                render_pass.set_bind_group(0, &self.backdrop_pipeline.uniform_bind_group, &[]);
+                render_pass.draw(0..3, 0..1);
+            }
+
+            if !modal_list.is_empty() {
+                render_pass.set_pipeline(&self.quad_pipeline.pipeline);
+                render_pass.set_vertex_buffer(0, self.quad_pipeline.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    self.quad_pipeline.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint16,
+                );
+                for &idx in &modal_list {
+                    let quad = &self.quads[idx].1;
+                    render_pass.set_bind_group(0, &quad.bind_group, &[]);
+                    render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
+                }
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -614,6 +728,7 @@ mod shader_tests {
     #[test]
     fn shaders_are_valid() {
         validate("quad.wgsl", include_str!("shaders/quad.wgsl"));
+        validate("backdrop.wgsl", include_str!("shaders/backdrop.wgsl"));
         validate("grid.wgsl", include_str!("shaders/grid.wgsl"));
         validate("particles.wgsl", include_str!("shaders/particles.wgsl"));
         validate("shadow.wgsl", include_str!("shaders/shadow.wgsl"));

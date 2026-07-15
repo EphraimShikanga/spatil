@@ -1,4 +1,5 @@
 pub mod animation;
+pub mod camera_controller;
 pub mod components;
 pub mod mode;
 pub mod systems;

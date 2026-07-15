@@ -4,14 +4,14 @@ use smithay::utils::SERIAL_COUNTER;
 use winit::event::{ElementState, KeyEvent};
 use winit::platform::scancode::PhysicalKeyExtScancode;
 
-use crate::config::{Action, KeyCombo, SpatilConfig};
+use crate::config::{Action, Direction, KeyCombo, SpatilConfig};
+use crate::scene::systems;
 use crate::state::SpatilState;
 
-/// While holding the session, the kernel's own Ctrl+Alt+Fn handling is off, so this
-/// is the user's only way out of the compositor and must not be unbindable-by-accident.
-/// The *combo* isn't ours to choose either — the standard keymap's `srvr_ctrl(fkey2vt)`
-/// already resolves Ctrl+Alt+Fn to these keysyms, so honouring the keysym follows
-/// whatever layout the user runs.
+/// A keyboard nudge is one step of the equivalent drag, in that gesture's own units.
+const ORBIT_STEP_PIXELS: f32 = 30.0;
+const TILT_STEP_DEGREES: f32 = 5.0;
+
 fn vt_switch_target(sym: Keysym) -> Option<i32> {
     let raw = sym.raw();
     (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12)
@@ -76,8 +76,43 @@ impl SpatilState {
             Action::CloseWindow => self.close_focused_window(),
             Action::Quit => self.should_quit = true,
             Action::ToggleScene => self.toggle_scene(),
+            Action::SetScene(mode) => self.set_scene(mode),
             Action::ChangeVt(vt) => self.change_vt(vt),
+            Action::Focus(direction) => self.focus_in_direction(direction),
+            Action::MoveWindow(direction) => self.move_focused_window(direction),
+            Action::Pan(direction) => self.pan_view(direction),
+            Action::Present => self.toggle_present(),
+            Action::Dismiss => {
+                self.dismiss_modal();
+            }
+            Action::Fullscreen => self.toggle_fullscreen(),
+            Action::Zoom(adjust) => {
+                let speed = self.config.input.zoom_speed;
+                self.wgpu_state.camera_controller.zoom_by(adjust.sign(), speed);
+            }
+            Action::ResetView => self.wgpu_state.camera_controller.reset(),
+            Action::Orbit(direction) => {
+                let step = self.config.input.orbit_speed.to_degrees() * ORBIT_STEP_PIXELS;
+                let (sx, sy) = direction.screen_step();
+                self.wgpu_state.camera_controller.orbit(-sx * step, -sy * step);
+            }
+            Action::Tilt(adjust) => self.tilt_windows(adjust.sign() * TILT_STEP_DEGREES),
         }
+    }
+
+    fn focus_in_direction(&mut self, direction: Direction) {
+        if self.world_is_modal() {
+            return;
+        }
+        let Some(from) = self.focused_entity() else {
+            return;
+        };
+        let Some(next) =
+            systems::focus_in_direction(&self.world, &self.wgpu_state.camera, from, direction)
+        else {
+            return;
+        };
+        self.focus_entity(next);
     }
 
     /// the script must be executable.

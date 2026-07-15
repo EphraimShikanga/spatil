@@ -22,6 +22,16 @@ impl SpatilState {
                     tracing::warn!(window_id, "move_cluster for unknown window_id");
                 }
             }
+            "look_at" | "camera" => {
+                let [x, y, z] = cmd.args[..] else {
+                    tracing::warn!("look_at needs 3 args [x,y,z]; got {cmd:?}");
+                    return;
+                };
+                self.wgpu_state
+                    .camera_controller
+                    .look_at(Vector3::new(x, y, z));
+            }
+            "reset_view" => self.wgpu_state.camera_controller.reset(),
             "show" | "map" => match cmd.window_id {
                 Some(window_id) if self.reveal_window(window_id) => {}
                 Some(window_id) => tracing::warn!(window_id, "show for unknown window_id"),

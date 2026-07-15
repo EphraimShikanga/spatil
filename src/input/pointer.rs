@@ -4,7 +4,8 @@ use smithay::utils::SERIAL_COUNTER;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 
-use crate::input::raycast::raycast_surface;
+use crate::input::drag::{BTN_LEFT, BTN_MIDDLE, BTN_RIGHT};
+use crate::input::raycast::{raycast_entity, raycast_surface};
 use crate::state::SpatilState;
 
 impl SpatilState {
@@ -24,14 +25,14 @@ impl SpatilState {
             (1.0 - y / h * 2.0) as f32,
         ];
         self.move_hw_cursor();
+        // A live drag owns the pointer; the client sees nothing until release.
+        if self.update_drag(self.pointer_location) {
+            return;
+        }
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
         let location = self.pointer_location;
-        // Smithay derives the surface-local point as `event.location - focus.1`, so
-        // focus.1 must be the surface's *origin*. Our mapping is a 3D raycast with no
-        // linear origin, so hand it the offset that makes that subtraction reproduce the
-        // hit point the raycast actually computed.
         let focus = raycast_surface(self, location).map(|(surface, hit)| (surface, location - hit));
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.input_time();
@@ -41,9 +42,9 @@ impl SpatilState {
 
     pub fn handle_pointer_button(&mut self, button: MouseButton, state: ElementState) {
         let button_code = match button {
-            MouseButton::Left => 0x110,
-            MouseButton::Right => 0x111,
-            MouseButton::Middle => 0x112,
+            MouseButton::Left => BTN_LEFT,
+            MouseButton::Right => BTN_RIGHT,
+            MouseButton::Middle => BTN_MIDDLE,
             MouseButton::Forward => 0x115,
             MouseButton::Back => 0x116,
             MouseButton::Other(b) => b as u32,
@@ -56,6 +57,19 @@ impl SpatilState {
     }
 
     pub fn dispatch_pointer_button(&mut self, button_code: u32, button_state: ButtonState) {
+        if button_state == ButtonState::Released && self.end_drag() {
+            return;
+        }
+        if button_state == ButtonState::Pressed {
+            let hit = raycast_entity(self, self.pointer_location).map(|h| h.entity);
+            if self.dismiss_on_backdrop(hit) {
+                return;
+            }
+            if self.begin_drag(button_code, self.pointer_location) {
+                return;
+            }
+        }
+
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
@@ -110,6 +124,13 @@ impl SpatilState {
     }
 
     pub fn dispatch_pointer_axis(&mut self, frame: AxisFrame) {
+        // Vertical scroll under the world modifier is ours; horizontal and
+        // unmodified scroll is the client's.
+        if let Some(steps) = wheel_steps(&frame)
+            && self.wheel_depth_or_zoom(steps)
+        {
+            return;
+        }
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
@@ -117,3 +138,16 @@ impl SpatilState {
         pointer.frame(self);
     }
 }
+
+fn wheel_steps(frame: &AxisFrame) -> Option<f32> {
+    if let Some((_, v120)) = frame.v120
+        && v120 != 0
+    {
+        return Some(-v120 as f32 / 120.0);
+    }
+    // Touchpad scroll is continuous pixels; approximate a notch.
+    let (_, value) = frame.axis;
+    (value.abs() > f64::EPSILON).then(|| -value as f32 / CONTINUOUS_PER_NOTCH)
+}
+
+const CONTINUOUS_PER_NOTCH: f32 = 10.0;

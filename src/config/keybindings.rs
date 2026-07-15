@@ -1,4 +1,57 @@
+use std::str::FromStr;
+
 use smithay::input::keyboard::{Keysym, ModifiersState, xkb};
+
+use crate::scene::mode::SceneMode;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl FromStr for Direction {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "left" => Ok(Self::Left),
+            "right" => Ok(Self::Right),
+            "up" => Ok(Self::Up),
+            "down" => Ok(Self::Down),
+            _ => Err(()),
+        }
+    }
+}
+
+impl Direction {
+    /// X grows right, Y grows up.
+    pub fn screen_step(self) -> (f32, f32) {
+        match self {
+            Self::Left => (-1.0, 0.0),
+            Self::Right => (1.0, 0.0),
+            Self::Up => (0.0, 1.0),
+            Self::Down => (0.0, -1.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Adjust {
+    Increase,
+    Decrease,
+}
+
+impl Adjust {
+    pub fn sign(self) -> f32 {
+        match self {
+            Self::Increase => 1.0,
+            Self::Decrease => -1.0,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -7,28 +60,88 @@ pub enum Action {
     CloseWindow,
     Quit,
     ToggleScene,
+    SetScene(SceneMode),
     ChangeVt(i32),
+    Focus(Direction),
+    MoveWindow(Direction),
+    Pan(Direction),
+    Present,
+    Dismiss,
+    Fullscreen,
+    Zoom(Adjust),
+    ResetView,
+    Orbit(Direction),
+    Tilt(Adjust),
 }
 
 impl Action {
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
-        if let Some(cmd) = s.strip_prefix("exec ") {
-            let cmd = cmd.trim();
-            return (!cmd.is_empty()).then(|| Action::Exec(cmd.to_string()));
-        }
-        if let Some(spec) = s.strip_prefix("hook ") {
-            let spec = spec.trim();
-            return (!spec.is_empty()).then(|| Action::Hook(spec.to_string()));
-        }
-        if let Some(vt) = s.strip_prefix("change_vt ") {
-            return vt.trim().parse().ok().map(Action::ChangeVt);
+        if let Some((verb, arg)) = s.split_once(char::is_whitespace) {
+            let arg = arg.trim();
+            if arg.is_empty() {
+                return None;
+            }
+            return match verb {
+                "exec" => Some(Action::Exec(arg.to_string())),
+                "hook" => Some(Action::Hook(arg.to_string())),
+                "change_vt" => arg.parse().ok().map(Action::ChangeVt),
+                "set_scene" => arg.parse().ok().map(Action::SetScene),
+                "focus" => arg.parse().ok().map(Action::Focus),
+                "move_window" => arg.parse().ok().map(Action::MoveWindow),
+                "pan" => arg.parse().ok().map(Action::Pan),
+                "orbit" => arg.parse().ok().map(Action::Orbit),
+                "zoom" => match arg {
+                    "in" => Some(Action::Zoom(Adjust::Increase)),
+                    "out" => Some(Action::Zoom(Adjust::Decrease)),
+                    _ => None,
+                },
+                "tilt" => match arg {
+                    "up" => Some(Action::Tilt(Adjust::Increase)),
+                    "down" => Some(Action::Tilt(Adjust::Decrease)),
+                    _ => None,
+                },
+                _ => None,
+            };
         }
         match s {
             "close_window" | "close" => Some(Action::CloseWindow),
             "quit" | "exit" => Some(Action::Quit),
             "toggle_scene" => Some(Action::ToggleScene),
+            "present" => Some(Action::Present),
+            "dismiss" => Some(Action::Dismiss),
+            "fullscreen" => Some(Action::Fullscreen),
+            "reset_view" => Some(Action::ResetView),
             _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modifier {
+    Ctrl,
+    Alt,
+    Shift,
+    Logo,
+}
+
+impl Modifier {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "super" | "logo" | "win" | "mod" | "mod4" => Some(Self::Logo),
+            "ctrl" | "control" => Some(Self::Ctrl),
+            "alt" | "mod1" | "meta" => Some(Self::Alt),
+            "shift" => Some(Self::Shift),
+            _ => None,
+        }
+    }
+
+    pub fn held(self, mods: &ModifiersState) -> bool {
+        match self {
+            Self::Ctrl => mods.ctrl,
+            Self::Alt => mods.alt,
+            Self::Shift => mods.shift,
+            Self::Logo => mods.logo,
         }
     }
 }
@@ -58,13 +171,13 @@ impl KeyCombo {
         let (key, mods) = parts.split_last()?;
 
         for m in mods {
-            match m.to_ascii_lowercase().as_str() {
-                "super" | "logo" | "win" | "mod" | "mod4" => logo = true,
-                "ctrl" | "control" => ctrl = true,
-                "alt" | "mod1" | "meta" => alt = true,
-                "shift" => shift = true,
-                other => {
-                    tracing::warn!("unknown modifier {other:?} in keybinding {s:?}");
+            match Modifier::parse(m) {
+                Some(Modifier::Logo) => logo = true,
+                Some(Modifier::Ctrl) => ctrl = true,
+                Some(Modifier::Alt) => alt = true,
+                Some(Modifier::Shift) => shift = true,
+                None => {
+                    tracing::warn!("unknown modifier {m:?} in keybinding {s:?}");
                     return None;
                 }
             }
@@ -148,5 +261,41 @@ mod tests {
         assert_eq!(Action::parse("exec   "), None);
         assert_eq!(Action::parse("hook  "), None);
         assert_eq!(Action::parse("frobnicate"), None);
+    }
+
+    #[test]
+    fn world_interaction_actions_parse() {
+        assert_eq!(Action::parse("focus left"), Some(Action::Focus(Direction::Left)));
+        assert_eq!(
+            Action::parse("move_window down"),
+            Some(Action::MoveWindow(Direction::Down))
+        );
+        assert_eq!(Action::parse("orbit right"), Some(Action::Orbit(Direction::Right)));
+        assert_eq!(Action::parse("zoom in"), Some(Action::Zoom(Adjust::Increase)));
+        assert_eq!(Action::parse("tilt down"), Some(Action::Tilt(Adjust::Decrease)));
+        assert_eq!(Action::parse("present"), Some(Action::Present));
+        assert_eq!(Action::parse("dismiss"), Some(Action::Dismiss));
+        assert_eq!(Action::parse("fullscreen"), Some(Action::Fullscreen));
+        assert_eq!(Action::parse("reset_view"), Some(Action::ResetView));
+        assert_eq!(
+            Action::parse("set_scene aether"),
+            Some(Action::SetScene(SceneMode::Aether))
+        );
+        // Unknown arguments are rejected rather than silently defaulted.
+        assert_eq!(Action::parse("focus sideways"), None);
+        assert_eq!(Action::parse("zoom sideways"), None);
+        assert_eq!(Action::parse("set_scene nope"), None);
+    }
+
+    #[test]
+    fn modifier_aliases_resolve() {
+        assert_eq!(Modifier::parse("Mod4"), Some(Modifier::Logo));
+        assert_eq!(Modifier::parse("control"), Some(Modifier::Ctrl));
+        assert_eq!(Modifier::parse("hyper"), None);
+
+        let mut mods = ModifiersState::default();
+        mods.logo = true;
+        assert!(Modifier::Logo.held(&mods));
+        assert!(!Modifier::Alt.held(&mods));
     }
 }

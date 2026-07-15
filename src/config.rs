@@ -4,7 +4,7 @@ mod loader;
 pub mod watcher;
 
 pub use bootstrap::bootstrap_config_dir;
-pub use keybindings::{Action, KeyCombo};
+pub use keybindings::{Action, Direction, KeyCombo, Modifier};
 pub use watcher::spawn_config_watcher;
 
 use std::collections::HashMap;
@@ -25,8 +25,60 @@ pub struct SpatilConfig {
     pub windows: Windows,
     pub scene_graph: SceneGraph,
     pub animation: Animation,
+    pub input: Input,
     pub autostart: Autostart,
     pub keybindings: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Input {
+    pub world_modifier: String,
+    pub orbit_speed: f32,
+    pub pan_speed: f32,
+    pub zoom_speed: f32,
+    pub drag_depth_speed: f32,
+    pub move_step: f32,
+    pub invert_scroll_zoom: bool,
+    pub focus_border_enabled: bool,
+    pub focus_border_color: String,
+    /// World units, not pixels.
+    pub focus_border_width: f32,
+    pub backdrop_dim: f32,
+    pub backdrop_dim_color: String,
+    pub present_fill: f32,
+}
+
+impl Default for Input {
+    fn default() -> Self {
+        Self {
+            world_modifier: "Super".to_string(),
+            orbit_speed: 0.005,
+            pan_speed: 0.002,
+            zoom_speed: 0.1,
+            drag_depth_speed: 0.05,
+            move_step: 0.25,
+            invert_scroll_zoom: false,
+            focus_border_enabled: true,
+            focus_border_color: "#4A90E2".to_string(),
+            focus_border_width: 0.004,
+            backdrop_dim: 0.55,
+            backdrop_dim_color: "#000000".to_string(),
+            present_fill: 0.8,
+        }
+    }
+}
+
+impl Input {
+    pub fn modifier(&self) -> Modifier {
+        Modifier::parse(&self.world_modifier).unwrap_or_else(|| {
+            tracing::warn!(
+                "unknown world_modifier {:?}; falling back to Super",
+                self.world_modifier
+            );
+            Modifier::Logo
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -54,6 +106,10 @@ pub struct Animation {
     pub switch_ms: f32,
     pub open_ms: f32,
     pub close_ms: f32,
+    pub present_ms: f32,
+    pub damping: f32,
+    pub spring_stiffness: f32,
+    pub spring_damping: f32,
 }
 
 impl Default for Animation {
@@ -63,6 +119,10 @@ impl Default for Animation {
             switch_ms: 500.0,
             open_ms: 250.0,
             close_ms: 220.0,
+            present_ms: 280.0,
+            damping: 0.02,
+            spring_stiffness: 220.0,
+            spring_damping: 22.0,
         }
     }
 }
@@ -291,6 +351,7 @@ impl Default for SpatilConfig {
             windows: Windows::default(),
             scene_graph: SceneGraph::default(),
             animation: Animation::default(),
+            input: Input::default(),
             autostart: Autostart::default(),
             keybindings: default_keybindings(),
         }
@@ -303,6 +364,27 @@ fn default_keybindings() -> HashMap<String, String> {
         ("Super+q".to_string(), "close_window".to_string()),
         ("Super+Shift+q".to_string(), "quit".to_string()),
         ("Super+Tab".to_string(), "toggle_scene".to_string()),
+        ("Super+Left".to_string(), "focus left".to_string()),
+        ("Super+Right".to_string(), "focus right".to_string()),
+        ("Super+Up".to_string(), "focus up".to_string()),
+        ("Super+Down".to_string(), "focus down".to_string()),
+        ("Super+Shift+Left".to_string(), "move_window left".to_string()),
+        ("Super+Shift+Right".to_string(), "move_window right".to_string()),
+        ("Super+Shift+Up".to_string(), "move_window up".to_string()),
+        ("Super+Shift+Down".to_string(), "move_window down".to_string()),
+        ("Super+space".to_string(), "present".to_string()),
+        ("Super+f".to_string(), "fullscreen".to_string()),
+        ("Super+Shift+h".to_string(), "pan left".to_string()),
+        ("Super+Shift+l".to_string(), "pan right".to_string()),
+        ("Super+Shift+k".to_string(), "pan up".to_string()),
+        ("Super+Shift+j".to_string(), "pan down".to_string()),
+        ("Super+bracketleft".to_string(), "orbit left".to_string()),
+        ("Super+bracketright".to_string(), "orbit right".to_string()),
+        ("Super+Prior".to_string(), "tilt up".to_string()),
+        ("Super+Next".to_string(), "tilt down".to_string()),
+        ("Super+equal".to_string(), "zoom in".to_string()),
+        ("Super+minus".to_string(), "zoom out".to_string()),
+        ("Super+0".to_string(), "reset_view".to_string()),
     ])
 }
 
@@ -458,5 +540,52 @@ mod tests {
         let compiled = cfg.compile_keybindings();
         assert_eq!(compiled.len(), 1);
         assert!(compiled.values().any(|a| matches!(a, Action::Exec(_))));
+    }
+
+    /// The shipped example is both our documentation and what first-run writes, so
+    /// a key that drifts from its default silently lies to every new user.
+    #[test]
+    fn the_shipped_example_config_matches_the_built_in_defaults() {
+        let example: SpatilConfig =
+            toml::from_str(include_str!("../assets/spatil.toml")).expect("assets/spatil.toml");
+        let defaults = SpatilConfig::default();
+
+        assert_eq!(example.input.world_modifier, defaults.input.world_modifier);
+        assert_eq!(example.input.orbit_speed, defaults.input.orbit_speed);
+        assert_eq!(example.input.pan_speed, defaults.input.pan_speed);
+        assert_eq!(example.input.zoom_speed, defaults.input.zoom_speed);
+        assert_eq!(example.input.drag_depth_speed, defaults.input.drag_depth_speed);
+        assert_eq!(example.input.move_step, defaults.input.move_step);
+        assert_eq!(example.input.focus_border_color, defaults.input.focus_border_color);
+        assert_eq!(example.input.focus_border_width, defaults.input.focus_border_width);
+        assert_eq!(example.input.backdrop_dim, defaults.input.backdrop_dim);
+        assert_eq!(example.input.present_fill, defaults.input.present_fill);
+        assert_eq!(example.animation.present_ms, defaults.animation.present_ms);
+        assert_eq!(example.animation.damping, defaults.animation.damping);
+        assert_eq!(example.animation.spring_stiffness, defaults.animation.spring_stiffness);
+        assert_eq!(example.animation.spring_damping, defaults.animation.spring_damping);
+
+        // A subset, not equality: the example may demo extra bindings. What must not
+        // happen is a default going undocumented, or documented differently.
+        for (combo, action) in &defaults.keybindings {
+            assert_eq!(
+                example.keybindings.get(combo),
+                Some(action),
+                "default binding {combo:?} = {action:?} is missing or wrong in assets/spatil.toml"
+            );
+        }
+    }
+
+    #[test]
+    fn every_documented_action_and_modifier_actually_parses() {
+        let example: SpatilConfig =
+            toml::from_str(include_str!("../assets/spatil.toml")).expect("assets/spatil.toml");
+        let compiled = example.compile_keybindings();
+        assert_eq!(
+            compiled.len(),
+            example.keybindings.len(),
+            "a shipped keybinding failed to compile"
+        );
+        assert_eq!(example.input.modifier(), Modifier::Logo);
     }
 }

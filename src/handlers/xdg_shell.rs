@@ -1,6 +1,7 @@
 use smithay::delegate_xdg_shell;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::Resource;
+use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::utils::{Serial, SERIAL_COUNTER};
 use smithay::wayland::shell::xdg::{
@@ -9,8 +10,8 @@ use smithay::wayland::shell::xdg::{
 
 use crate::state::SpatilState;
 use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete};
-use crate::scene::components::{Transform, WaylandSurface};
-use crate::scene::mode::default_transform;
+use crate::scene::components::{Billboard, Transform, WaylandSurface, WindowState};
+use crate::scene::mode::{SceneMode, default_transform};
 
 impl XdgShellHandler for SpatilState {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
@@ -36,11 +37,15 @@ impl XdgShellHandler for SpatilState {
 
         let window_id = self.next_window_id();
         let mode = self.config.scene_graph.scene_mode();
-        let transform = default_transform(mode, window_id, &self.config.scene_graph);
-        self.world.spawn((
+        let facing = self.wgpu_state.facing_rotation(mode);
+        let transform = default_transform(mode, window_id, &self.config.scene_graph, facing);
+        let entity = self.world.spawn((
             transform,
             WaylandSurface::new(surface.wl_surface().id(), window_id),
         ));
+        if mode == SceneMode::Aether {
+            let _ = self.world.insert_one(entity, Billboard);
+        }
 
         // Give the new window keyboard focus so the user can type into it right
         // away. Pointer focus follows the cursor via motion events.
@@ -100,6 +105,26 @@ impl XdgShellHandler for SpatilState {
         // Let scripts react to the window going away.
         if let Some(window_id) = closed_window_id {
             self.broadcast_event(&crate::ipc::SpatilEvent::new("window_closed", window_id));
+        }
+    }
+
+    // Clients fullscreen themselves, so this path must work without our keybinding.
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<WlOutput>) {
+        match self.entity_for_surface(&surface.wl_surface().id()) {
+            Some(entity) => self.raise_window(entity, WindowState::Fullscreen),
+            // No scene entity yet: the client is still owed a configure or it hangs.
+            None => {
+                surface.send_configure();
+            }
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        match self.entity_for_surface(&surface.wl_surface().id()) {
+            Some(entity) => self.return_to_ambient(entity),
+            None => {
+                surface.send_configure();
+            }
         }
     }
 
