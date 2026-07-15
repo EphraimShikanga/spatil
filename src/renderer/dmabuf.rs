@@ -155,33 +155,30 @@ pub(crate) fn query_render_node_dev_t(adapter: &wgpu::Adapter) -> Option<u64> {
 
 fn query_format_modifiers(
     adapter: &wgpu::Adapter,
+    format: ash::vk::Format,
     tiling_feature: ash::vk::FormatFeatureFlags,
 ) -> Vec<Modifier> {
     unsafe {
         let Some(hal_adapter) = adapter.as_hal::<wgpu_hal::api::Vulkan>() else {
-            return vec![Modifier::Linear];
+            return Vec::new();
         };
         let shared = hal_adapter.shared_instance();
         let instance = shared.raw_instance();
         let phys = hal_adapter.raw_physical_device();
 
         if shared.instance_api_version() < ash::vk::API_VERSION_1_1 {
-            return vec![Modifier::Linear];
+            return Vec::new();
         }
 
         let mut modifier_list = ash::vk::DrmFormatModifierPropertiesListEXT::default();
         {
             let mut format_props2 =
                 ash::vk::FormatProperties2::default().push_next(&mut modifier_list);
-            instance.get_physical_device_format_properties2(
-                phys,
-                ash::vk::Format::B8G8R8A8_UNORM,
-                &mut format_props2,
-            );
+            instance.get_physical_device_format_properties2(phys, format, &mut format_props2);
         }
 
         if modifier_list.drm_format_modifier_count == 0 {
-            return vec![Modifier::Linear];
+            return Vec::new();
         }
 
         let mut modifiers = Vec::with_capacity(modifier_list.drm_format_modifier_count as usize);
@@ -194,11 +191,7 @@ fn query_format_modifiers(
         {
             let mut format_props2 =
                 ash::vk::FormatProperties2::default().push_next(&mut modifier_list);
-            instance.get_physical_device_format_properties2(
-                phys,
-                ash::vk::Format::B8G8R8A8_UNORM,
-                &mut format_props2,
-            );
+            instance.get_physical_device_format_properties2(phys, format, &mut format_props2);
         }
 
         for prop in props {
@@ -206,18 +199,31 @@ fn query_format_modifiers(
                 modifiers.push(Modifier::from(prop.drm_format_modifier));
             }
         }
-
-        if modifiers.is_empty() {
-            modifiers.push(Modifier::Linear);
-        }
         modifiers
     }
 }
 
 pub fn query_dmabuf_modifiers(adapter: &wgpu::Adapter) -> Vec<Modifier> {
-    query_format_modifiers(adapter, ash::vk::FormatFeatureFlags::SAMPLED_IMAGE)
+    let mut modifiers = query_format_modifiers(
+        adapter,
+        ash::vk::Format::B8G8R8A8_UNORM,
+        ash::vk::FormatFeatureFlags::SAMPLED_IMAGE,
+    );
+    if modifiers.is_empty() {
+        modifiers.push(Modifier::Linear);
+    }
+    modifiers
 }
 
+/// Modifiers the adapter can rasterize into for the sRGB scanout format we
+/// actually create (`Bgra8UnormSrgb`). Querying `UNORM` here would be a lie: NVIDIA
+/// advertises Linear for UNORM but wedges the GPU rendering sRGB into a Linear
+/// dmabuf. Returns empty rather than assuming Linear, an unsupported modifier
+/// hangs the GPU instead of failing loudly.
 pub fn query_render_modifiers(adapter: &wgpu::Adapter) -> Vec<Modifier> {
-    query_format_modifiers(adapter, ash::vk::FormatFeatureFlags::COLOR_ATTACHMENT)
+    query_format_modifiers(
+        adapter,
+        ash::vk::Format::B8G8R8A8_SRGB,
+        ash::vk::FormatFeatureFlags::COLOR_ATTACHMENT,
+    )
 }

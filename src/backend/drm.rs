@@ -28,6 +28,10 @@ use crate::state::SpatilState;
 /// Round-robin depth; a buffer's flip always completes before we return to it.
 const RING_LEN: usize = 3;
 
+/// Upper bound on waiting for a frame's GPU work. Generous for a ~16 ms frame; if it
+/// trips, the GPU is wedged and we must not block the event loop (see the wait below).
+const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+
 struct ScanoutBuffer {
     _bo: GbmBuffer, // owns the GBM allocation the view + fb alias
     view: wgpu::TextureView,
@@ -112,11 +116,21 @@ fn try_run(config: SpatilConfig) -> Result<(), String> {
     }
     let (device, queue) = pollster::block_on(renderer::request_device(&adapter));
 
-    let mut render_mods = renderer::query_render_modifiers(&adapter);
-    if !render_mods.contains(&Modifier::Linear) {
-        render_mods.push(Modifier::Linear);
+    // Only modifiers the driver says it can rasterize sRGB into. Never widen this set:
+    // rendering into an unadvertised modifier (e.g. Linear on NVIDIA) hangs the GPU
+    // rather than erroring, which strands the display
+    let render_mods = renderer::query_render_modifiers(&adapter);
+    if render_mods.is_empty() {
+        return Err(
+            "adapter advertises no scanout-renderable modifier for Bgra8UnormSrgb -- \
+             cannot render to this display"
+                .into(),
+        );
     }
-    tracing::info!("candidate scanout modifiers: {render_mods:?}");
+    tracing::info!(
+        "renderable scanout modifiers: {render_mods:?} (Linear supported: {})",
+        render_mods.contains(&Modifier::Linear)
+    );
 
     // XRGB8888 scanout -> Bgra8UnormSrgb, matching the client dmabuf-import format.
     let format = wgpu::TextureFormat::Bgra8UnormSrgb;
@@ -301,9 +315,18 @@ impl SpatilState {
 
         // Block until the GPU write completes before scanning out. A KMS in-fence
         // would avoid the CPU stall, but wgpu 30 exposes no exportable fence from
-        // submit() to hand KMS.
-        if let Err(err) = self.wgpu_state.device.poll(wgpu::PollType::wait_indefinitely()) {
-            tracing::error!("device poll failed: {err:?}");
+        // submit() to hand KMS. The wait is bounded: an unbounded one would freeze
+        // the event loop, and a frozen loop can't ack the session pause, which wedges
+        // VT switching and strands the user on a dead display with no way out.
+        let poll = self.wgpu_state.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(GPU_WAIT_TIMEOUT),
+        });
+        if let Err(err) = poll {
+            tracing::error!(
+                "GPU wait failed ({err:?}) after {GPU_WAIT_TIMEOUT:?}; skipping flip \
+                 (loop stays responsive -- Super+Shift+q or a VT switch still work)"
+            );
             return;
         }
 
@@ -329,6 +352,9 @@ impl SpatilState {
         };
         match result {
             Ok(()) => {
+                if !drm.first_flip_done {
+                    tracing::info!("initial modeset committed; display should be live");
+                }
                 drm.front = idx;
                 drm.first_flip_done = true;
             }
@@ -556,32 +582,89 @@ fn parse_mode_spec(spec: &str) -> Option<(u16, u16, Option<u32>)> {
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?, hz))
 }
 
+fn fmt_dev_t(dev: u64) -> String {
+    format!("{}:{}", (dev >> 8) & 0xfff, dev & 0xff | ((dev >> 12) & !0xff))
+}
+
 fn pick_adapter(instance: &wgpu::Instance, render_dev: Option<u64>) -> Result<wgpu::Adapter, String> {
     let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN));
     if adapters.is_empty() {
         return Err("no Vulkan adapter available".into());
     }
-    if let Some(target) = render_dev {
-        if let Some(a) = adapters
-            .iter()
-            .find(|a| renderer::query_render_node_dev_t(a) == Some(target))
-        {
-            return Ok(a.clone());
-        }
-        tracing::warn!(
-            "no wgpu adapter matches KMS render node {target}; using first adapter \
-             (dmabuf sharing may fail on multi-GPU)"
-        );
+    let Some(target) = render_dev else {
+        tracing::warn!("KMS device exposes no render node; using the first Vulkan adapter");
+        return Ok(adapters.into_iter().next().unwrap());
+    };
+    if let Some(adapter) = adapters
+        .iter()
+        .find(|a| renderer::query_render_node_dev_t(a) == Some(target))
+    {
+        return Ok(adapter.clone());
     }
-    Ok(adapters.into_iter().next().unwrap())
+
+    // Rendering on a GPU that doesn't drive the display is a cross-GPU (PRIME) setup:
+    // the two GPUs share no renderable modifier, so allocation fails or worse, the
+    // render silently hangs. Refuse with something actionable instead currently only single-GPU
+    let available = adapters
+        .iter()
+        .map(|a| {
+            let node = renderer::query_render_node_dev_t(a)
+                .map_or_else(|| "unknown".to_string(), fmt_dev_t);
+            format!("{} (render node {node})", a.get_info().name)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "no Vulkan adapter drives this display: the KMS device's render node is {}, but the \
+         only Vulkan adapters are [{available}]. Spatil renders and scans out on one GPU, so \
+         install the Vulkan driver for the GPU that owns the display (Intel: `vulkan-intel`, \
+         AMD: `vulkan-radeon`), or point [output] at a connector on a GPU you can render on.",
+        fmt_dev_t(target)
+    ))
 }
 
-/// Allocates the GBM scanout ring, importing each bo as a wgpu render target + KMS fb.
+/// Builds the scanout ring, trying each renderable modifier in turn: a modifier can be
+/// advertised yet still be unusable end-to-end (GBM may refuse to allocate it, or the
+/// driver may reject the imported layout), and that only shows up when we try. Tiled
+/// first, `Linear` last, Linear scans out correctly but is the slow path.
 fn build_ring(
     device: &wgpu::Device,
     drm_fd: &DrmDeviceFd,
     allocator: &mut GbmAllocator<DrmDeviceFd>,
     modifiers: &[Modifier],
+    width: u16,
+    height: u16,
+) -> Result<Vec<ScanoutBuffer>, String> {
+    let mut candidates: Vec<Modifier> = modifiers
+        .iter()
+        .copied()
+        .filter(|m| *m != Modifier::Linear)
+        .collect();
+    if modifiers.contains(&Modifier::Linear) {
+        candidates.push(Modifier::Linear);
+    }
+
+    let mut last_err = "no candidate modifiers".to_string();
+    for modifier in candidates {
+        match try_build_ring(device, drm_fd, allocator, modifier, width, height) {
+            Ok(ring) => {
+                tracing::info!("scanout modifier: {modifier:?}");
+                return Ok(ring);
+            }
+            Err(err) => {
+                tracing::warn!("scanout modifier {modifier:?} unusable: {err}");
+                last_err = err;
+            }
+        }
+    }
+    Err(format!("no usable scanout modifier ({last_err})"))
+}
+
+fn try_build_ring(
+    device: &wgpu::Device,
+    drm_fd: &DrmDeviceFd,
+    allocator: &mut GbmAllocator<DrmDeviceFd>,
+    modifier: Modifier,
     width: u16,
     height: u16,
 ) -> Result<Vec<ScanoutBuffer>, String> {
@@ -592,19 +675,36 @@ fn build_ring(
                 width as u32,
                 height as u32,
                 Fourcc::Xrgb8888,
-                modifiers,
+                &[modifier],
                 GbmBufferFlags::SCANOUT | GbmBufferFlags::RENDERING,
             )
-            .map_err(|e| format!("buffer {i} alloc: {e}"))?;
-        let dmabuf = bo.export().map_err(|e| format!("buffer {i} export: {e}"))?;
+            .map_err(|e| format!("alloc: {e}"))?;
+        let dmabuf = bo.export().map_err(|e| format!("export: {e}"))?;
+        let chosen = dmabuf.format().modifier;
+        // smithay silently falls back to an implicit modifier when allocation fails and
+        // the list holds Linear/Invalid; an unknown layout must never reach the GPU
+        if chosen != modifier {
+            return Err(format!("GBM returned {chosen:?}, not the requested {modifier:?}"));
+        }
         if i == 0 {
-            tracing::info!("scanout modifier chosen by GBM: {:?}", dmabuf.format().modifier);
+            tracing::info!(
+                ?modifier,
+                stride = dmabuf.strides().next().unwrap_or(0),
+                offset = dmabuf.offsets().next().unwrap_or(0),
+                planes = dmabuf.num_planes(),
+                "probing scanout modifier"
+            );
+        }
+        // texture_from_dmabuf_fd imports a single fd, so compressed/CCS modifiers
+        // (which carry an auxiliary plane) can't be imported.
+        if dmabuf.num_planes() != 1 {
+            return Err(format!("{} planes; only single-plane is importable", dmabuf.num_planes()));
         }
         let texture = import_scanout_texture(device, &dmabuf, width as u32, height as u32)
-            .map_err(|e| format!("buffer {i} wgpu import: {e}"))?;
+            .map_err(|e| format!("wgpu import: {e}"))?;
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let framebuffer = framebuffer_from_bo(drm_fd, &bo, true)
-            .map_err(|e| format!("buffer {i} framebuffer_from_bo: {e}"))?;
+            .map_err(|e| format!("framebuffer_from_bo: {e}"))?;
         ring.push(ScanoutBuffer {
             _bo: bo,
             view,
