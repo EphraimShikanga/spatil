@@ -142,5 +142,3 @@ exec = [
 "Super+Shift+q" = "quit"
 "Super+Tab" = "toggle_scene"
 # "Super+g" = "hook place_next.py"   # snap the next window you open to center
-# change_vt switches virtual terminals (DRM backend only), e.g. Ctrl+Alt+F2:
-# "Ctrl+Alt+F2" = "change_vt 2"

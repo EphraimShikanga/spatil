@@ -1,11 +1,23 @@
 use smithay::backend::input::KeyState;
-use smithay::input::keyboard::{FilterResult, Keycode};
+use smithay::input::keyboard::{FilterResult, Keycode, Keysym, keysyms};
 use smithay::utils::SERIAL_COUNTER;
 use winit::event::{ElementState, KeyEvent};
 use winit::platform::scancode::PhysicalKeyExtScancode;
 
 use crate::config::{Action, KeyCombo, SpatilConfig};
 use crate::state::SpatilState;
+
+/// While holding the session, the kernel's own Ctrl+Alt+Fn handling is off, so this
+/// is the user's only way out of the compositor and must not be unbindable-by-accident.
+/// The *combo* isn't ours to choose either — the standard keymap's `srvr_ctrl(fkey2vt)`
+/// already resolves Ctrl+Alt+Fn to these keysyms, so honouring the keysym follows
+/// whatever layout the user runs.
+fn vt_switch_target(sym: Keysym) -> Option<i32> {
+    let raw = sym.raw();
+    (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12)
+        .contains(&raw)
+        .then(|| (raw - keysyms::KEY_XF86Switch_VT_1 + 1) as i32)
+}
 
 impl SpatilState {
     pub fn handle_keyboard(&mut self, event: KeyEvent) {
@@ -37,7 +49,11 @@ impl SpatilState {
             if key_state != KeyState::Pressed {
                 return FilterResult::Forward;
             }
-            let combo = KeyCombo::from_state(mods, handle.modified_sym());
+            let sym = handle.modified_sym();
+            if let Some(vt) = vt_switch_target(sym) {
+                return FilterResult::Intercept(Action::ChangeVt(vt));
+            }
+            let combo = KeyCombo::from_state(mods, sym);
             match data.keybindings.get(&combo) {
                 Some(action) => FilterResult::Intercept(action.clone()),
                 None => FilterResult::Forward,
@@ -90,5 +106,19 @@ impl SpatilState {
         if let Some(toplevel) = self.toplevels.iter().find(|t| *t.wl_surface() == focused) {
             toplevel.send_close();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vt_keysyms_map_to_terminals() {
+        assert_eq!(vt_switch_target(Keysym::new(keysyms::KEY_XF86Switch_VT_1)), Some(1));
+        assert_eq!(vt_switch_target(Keysym::new(keysyms::KEY_XF86Switch_VT_12)), Some(12));
+        // Plain F1 is not a VT switch: the keymap only yields XF86Switch_VT_n with Ctrl+Alt.
+        assert_eq!(vt_switch_target(Keysym::new(keysyms::KEY_F1)), None);
+        assert_eq!(vt_switch_target(Keysym::new(keysyms::KEY_a)), None);
     }
 }

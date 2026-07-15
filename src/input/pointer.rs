@@ -27,8 +27,12 @@ impl SpatilState {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        let focus = raycast_surface(self, self.pointer_location);
         let location = self.pointer_location;
+        // Smithay derives the surface-local point as `event.location - focus.1`, so
+        // focus.1 must be the surface's *origin*. Our mapping is a 3D raycast with no
+        // linear origin, so hand it the offset that makes that subtraction reproduce the
+        // hit point the raycast actually computed.
+        let focus = raycast_surface(self, location).map(|(surface, hit)| (surface, location - hit));
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.input_time();
         pointer.motion(self, focus, &MotionEvent { location, serial, time });
