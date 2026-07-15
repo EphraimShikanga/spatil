@@ -1,5 +1,3 @@
-//! Backend selection and the shared, GPU-agnostic bring-up. See `dev/drm-backend.md`.
-
 pub mod drm;
 pub mod winit;
 
