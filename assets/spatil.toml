@@ -121,19 +121,27 @@ spring_damping = 22.0
 # Nothing here happens unless `world_modifier` is held -- without it every pointer
 # event goes to the application untouched, so apps keep working normally.
 #
-#   <mod> + Left-drag            move the window on the plane parallel to your
-#                                screen (left/right, up/down, every diagonal)
-#   <mod> + Right-drag           push the window away / pull it closer
-#   <mod> + Middle-drag          orbit the world around what you are looking at
-#   <mod> + Shift + Middle-drag  pan: slide what you are looking at
-#   <mod> + scroll               push/pull the window during a drag; otherwise
-#                                zoom TOWARD THE CURSOR -- point at something far
-#                                away and scroll to travel to it
+# The Left button is a universal grab, and what is under it decides what you grab:
 #
-# Orbit, pan and zoom all work in BOTH scenes. Together they reach any viewpoint:
-# pan puts the pivot on the thing you care about, orbit swings around it (so you
-# can see its back), and zoom closes the distance. `look_at` over the IPC socket
-# jumps the camera to an explicit coordinate.
+#   <mod> + Left-drag ON A WINDOW    move it on the plane parallel to your screen
+#                                    (left/right, up/down, every diagonal)
+#   <mod> + Right-drag ON A WINDOW   push it away / pull it closer
+#   <mod> + Left-drag ON THE WORLD   orbit the world around what you are looking at
+#   <mod> + Shift + Left-drag        pan: slide what you are looking at
+#   <mod> + Left-CLICK THE WORLD     fly there: the camera travels to that point
+#   <mod> + scroll                   push/pull the window during a drag; otherwise
+#                                    zoom toward the cursor, and once zoomed in all
+#                                    the way KEEP SCROLLING to walk into the world --
+#                                    point at a far/deep window and scroll to fly to
+#                                    it, however deep it is (there is no zoom wall)
+#
+# Middle-drag orbits (Shift+Middle pans) too, if you have a middle button.
+#
+# Orbit, pan, fly and zoom all work in BOTH scenes. Together they reach any
+# viewpoint: pan/fly put you over the thing you care about, orbit swings around it
+# (so you can see its back), zoom closes the distance. `look_at` over the IPC
+# socket jumps the camera to an explicit coordinate. New windows open under the
+# cursor at the depth you are focused on, so they appear where you are looking.
 #
 # Windows stay exactly where you put them -- there is no snapping and no layout
 # grid. Placement is remembered per scene, so flipping strata⇄aether and back

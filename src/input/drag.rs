@@ -20,6 +20,9 @@ const HOVER_LIFT: f32 = 0.06;
 /// Anything faster is a stalled frame, not intent.
 const MAX_THROW_SPEED: f32 = 12.0;
 
+/// Pointer travel (host px) under which a world grab is a click, not a drag.
+const TAP_SLOP: f64 = 6.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragKind {
     Plane,
@@ -48,6 +51,19 @@ pub enum NavKind {
 pub struct Navigate {
     kind: NavKind,
     last_cursor: Point<f64, Logical>,
+    press_cursor: Point<f64, Logical>,
+    fly_on_tap: bool,
+}
+
+impl Navigate {
+    fn new(kind: NavKind, cursor: Point<f64, Logical>, fly_on_tap: bool) -> Self {
+        Self { kind, last_cursor: cursor, press_cursor: cursor, fly_on_tap }
+    }
+
+    fn was_tap(&self) -> bool {
+        let (dx, dy) = (self.last_cursor.x - self.press_cursor.x, self.last_cursor.y - self.press_cursor.y);
+        (dx * dx + dy * dy) <= TAP_SLOP * TAP_SLOP
+    }
 }
 
 impl SpatilState {
@@ -70,48 +86,51 @@ impl SpatilState {
         if !self.world_modifier_held() || self.world_is_modal() {
             return false;
         }
+        let nav_kind = if self.modifier_held(Modifier::Shift) {
+            NavKind::Pan
+        } else {
+            NavKind::Orbit
+        };
 
         if button == BTN_MIDDLE {
-            let kind = if self.modifier_held(Modifier::Shift) {
-                NavKind::Pan
-            } else {
-                NavKind::Orbit
-            };
-            self.navigate = Some(Navigate { kind, last_cursor: cursor });
+            self.navigate = Some(Navigate::new(nav_kind, cursor, false));
             return true;
         }
 
-        let kind = match button {
+        let drag_kind = match button {
             BTN_LEFT => DragKind::Plane,
             BTN_RIGHT => DragKind::Depth,
             _ => return false,
         };
-        let Some(hit) = raycast_entity(self, cursor) else {
-            return false;
-        };
-        let Ok(position) = self.world.get::<&Transform>(hit.entity).map(|t| t.translation) else {
-            return false;
-        };
 
-        let plane_normal = -self.wgpu_state.camera.forward();
-        self.world.remove_one::<Velocity>(hit.entity).ok();
-        self.world.remove_one::<Spring>(hit.entity).ok();
+        if let Some(hit) = raycast_entity(self, cursor)
+            && let Ok(position) = self.world.get::<&Transform>(hit.entity).map(|t| t.translation)
+        {
+            let plane_normal = -self.wgpu_state.camera.forward();
+            self.world.remove_one::<Velocity>(hit.entity).ok();
+            self.world.remove_one::<Spring>(hit.entity).ok();
+            self.drag = Some(Drag {
+                kind: drag_kind,
+                entity: hit.entity,
+                grab_offset: position - hit.world_hit,
+                plane_normal,
+                plane_point: position,
+                depth: 0.0,
+                last_position: position,
+                last_cursor: cursor,
+                last_move: Instant::now(),
+                velocity: Vector3::zero(),
+            });
+            self.lift_dragged_window();
+            self.focus_entity(hit.entity);
+            return true;
+        }
 
-        self.drag = Some(Drag {
-            kind,
-            entity: hit.entity,
-            grab_offset: position - hit.world_hit,
-            plane_normal,
-            plane_point: position,
-            depth: 0.0,
-            last_position: position,
-            last_cursor: cursor,
-            last_move: Instant::now(),
-            velocity: Vector3::zero(),
-        });
-        self.lift_dragged_window();
-        self.focus_entity(hit.entity);
-        true
+        if button == BTN_LEFT {
+            self.navigate = Some(Navigate::new(nav_kind, cursor, true));
+            return true;
+        }
+        false
     }
 
     pub fn update_drag(&mut self, cursor: Point<f64, Logical>) -> bool {
@@ -164,7 +183,10 @@ impl SpatilState {
     }
 
     pub fn end_drag(&mut self) -> bool {
-        if self.navigate.take().is_some() {
+        if let Some(nav) = self.navigate.take() {
+            if nav.fly_on_tap && nav.was_tap() {
+                self.fly_to_cursor();
+            }
             return true;
         }
         let Some(drag) = self.drag.take() else {
@@ -212,26 +234,48 @@ impl SpatilState {
             let speed = self.config.input.drag_depth_speed;
             self.push_drag_depth(steps * invert * speed);
         } else {
-            let speed = self.config.input.zoom_speed;
-            let pivot = self.cursor_pivot();
-            self.wgpu_state
-                .camera_controller
-                .zoom_toward(pivot, steps * invert, speed);
+            self.zoom_at_cursor(steps * invert);
         }
         true
     }
 
-    /// The world point under the cursor: a window if the ray strikes one, else the
-    /// plane through the current look-at
+    pub fn zoom_at_cursor(&mut self, steps: f32) {
+        let pivot = self.cursor_pivot();
+        let speed = self.config.input.zoom_speed;
+        self.wgpu_state.camera_controller.zoom_toward(pivot, steps, speed);
+    }
+
+    /// Keyboard zoom: no cursor, so it aims straight ahead.
+    pub fn zoom_centered(&mut self, steps: f32) {
+        let camera = &self.wgpu_state.camera;
+        let distance = (camera.eye - camera.target).magnitude();
+        let pivot = camera.target.to_vec() + camera.forward() * distance;
+        let speed = self.config.input.zoom_speed;
+        self.wgpu_state.camera_controller.zoom_toward(pivot, steps, speed);
+    }
+
     fn cursor_pivot(&self) -> Vector3<f32> {
         let camera = &self.wgpu_state.camera;
         let fallback = camera.target.to_vec();
         if let Some(hit) = raycast_entity(self, self.pointer_location) {
             return hit.world_hit;
         }
-        raycast::cursor_ray(self, self.pointer_location)
-            .and_then(|ray| ray.plane_hit(fallback, -camera.forward()))
-            .unwrap_or(fallback)
+        self.cursor_on_focal_plane().unwrap_or(fallback)
+    }
+
+    fn cursor_on_focal_plane(&self) -> Option<Vector3<f32>> {
+        let camera = &self.wgpu_state.camera;
+        raycast::cursor_ray(self, self.pointer_location)?
+            .plane_hit(camera.target.to_vec(), -camera.forward())
+    }
+
+    fn fly_to_cursor(&mut self) {
+        let point = self.cursor_pivot();
+        self.wgpu_state.camera_controller.look_at(point);
+    }
+
+    pub fn cursor_spawn_point(&self) -> Option<Vector3<f32>> {
+        self.pointer_moved.then(|| self.cursor_on_focal_plane()).flatten()
     }
 
     fn push_drag_depth(&mut self, amount: f32) {
@@ -257,8 +301,6 @@ impl SpatilState {
         }
     }
 
-    /// Both gestures work in both modes; both "grab the world" (the scene tracks
-    /// the cursor).
     fn navigate_by(&mut self, kind: NavKind, dx: f32, dy: f32) {
         match kind {
             NavKind::Orbit => {
@@ -322,5 +364,26 @@ impl SpatilState {
     fn remember_placement(&mut self, entity: Entity) {
         let mode = self.config.scene_graph.scene_mode();
         self.remember_placement_in(entity, mode);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nav(press: (f64, f64), release: (f64, f64)) -> Navigate {
+        let mut n = Navigate::new(NavKind::Orbit, press.into(), true);
+        n.last_cursor = release.into();
+        n
+    }
+
+    #[test]
+    fn a_still_release_is_a_tap_a_dragged_one_is_not() {
+        assert!(nav((100.0, 100.0), (100.0, 100.0)).was_tap());
+        // Within the slop: a shaky click still flies.
+        assert!(nav((100.0, 100.0), (103.0, 102.0)).was_tap());
+        // A real drag past the slop orbits, it does not fly.
+        assert!(!nav((100.0, 100.0), (140.0, 100.0)).was_tap());
+        assert!(!nav((100.0, 100.0), (100.0, 130.0)).was_tap());
     }
 }

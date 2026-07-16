@@ -38,7 +38,10 @@ impl XdgShellHandler for SpatilState {
         let window_id = self.next_window_id();
         let mode = self.config.scene_graph.scene_mode();
         let facing = self.wgpu_state.facing_rotation(mode);
-        let transform = default_transform(mode, window_id, &self.config.scene_graph, facing);
+        let mut transform = default_transform(mode, window_id, &self.config.scene_graph, facing);
+        if let Some(spawn) = self.cursor_spawn_point() {
+            transform.translation = spawn;
+        }
         let entity = self.world.spawn((
             transform,
             WaylandSurface::new(surface.wl_surface().id(), window_id),

@@ -86,10 +86,7 @@ impl SpatilState {
                 self.dismiss_modal();
             }
             Action::Fullscreen => self.toggle_fullscreen(),
-            Action::Zoom(adjust) => {
-                let speed = self.config.input.zoom_speed;
-                self.wgpu_state.camera_controller.zoom_by(adjust.sign(), speed);
-            }
+            Action::Zoom(adjust) => self.zoom_centered(adjust.sign()),
             Action::ResetView => self.wgpu_state.camera_controller.reset(),
             Action::Orbit(direction) => {
                 let step = self.config.input.orbit_speed.to_degrees() * ORBIT_STEP_PIXELS;

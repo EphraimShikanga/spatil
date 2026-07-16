@@ -1,4 +1,4 @@
-use cgmath::{Vector3, Zero};
+use cgmath::{InnerSpace, Vector3, Zero};
 
 use crate::scene::animation::{Physics, spring_step};
 
@@ -6,6 +6,8 @@ const ZOOM_MIN: f32 = 0.25;
 const ZOOM_MAX: f32 = 4.0;
 /// Short of 90, where the orbit basis degenerates against the world up-axis.
 const PITCH_LIMIT: f32 = 85.0;
+const WALK_FRACTION: f32 = 0.25;
+const WALK_MIN: f32 = 0.1;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CameraController {
@@ -54,22 +56,28 @@ impl CameraController {
     }
 
     pub fn zoom_toward(&mut self, pivot: Vector3<f32>, steps: f32, speed: f32) {
-        let requested = self.zoom * (1.0 - speed).powf(steps);
-        let clamped = requested.clamp(ZOOM_MIN, ZOOM_MAX);
-        let factor = clamped / self.zoom;
-        self.zoom = clamped;
-        self.pan = self.pan * factor + pivot * (1.0 - factor);
-
-        // Once the distance bottoms out, the refused factor becomes travel rather
-        // than a wall
-        let residual = requested / clamped;
-        if residual < 1.0 {
-            self.pan = self.pan * residual + pivot * (1.0 - residual);
+        let next = self.zoom * (1.0 - speed).powf(steps);
+        if (ZOOM_MIN..=ZOOM_MAX).contains(&next) {
+            let factor = next / self.zoom;
+            self.zoom = next;
+            self.pan = self.pan * factor + pivot * (1.0 - factor);
+        } else {
+            self.zoom = next.clamp(ZOOM_MIN, ZOOM_MAX);
+            // Inward only: dollying out past the far clamp would fling into the void.
+            if steps > 0.0 {
+                self.dolly_toward(pivot, steps);
+            }
         }
     }
 
-    pub fn zoom_by(&mut self, steps: f32, speed: f32) {
-        self.zoom_toward(self.pan, steps, speed);
+    fn dolly_toward(&mut self, pivot: Vector3<f32>, steps: f32) {
+        let to = pivot - self.pan;
+        let len = to.magnitude();
+        if len < 1e-4 {
+            return;
+        }
+        let mag = ((len * WALK_FRACTION).max(WALK_MIN) * steps).min(len);
+        self.pan += to / len * mag;
     }
 
     pub fn reset(&mut self) {
@@ -139,22 +147,42 @@ mod tests {
         assert!((zoom - 1.0).abs() < 0.01, "zoom {zoom}");
     }
 
+    fn zoom_centered(c: &mut CameraController, steps: f32) {
+        let pivot = c.pan;
+        c.zoom_toward(pivot, steps, 0.1);
+    }
+
     #[test]
-    fn zoom_is_geometric_clamped_and_reversible() {
+    fn zoom_is_geometric_within_range_and_clamps() {
         let mut c = CameraController::default();
-        c.zoom_by(1.0, 0.1);
+        zoom_centered(&mut c, 1.0);
         assert!((c.zoom - 0.9).abs() < 1e-5, "one notch in: {}", c.zoom);
-        c.zoom_by(-1.0, 0.1);
+        zoom_centered(&mut c, -1.0);
         assert!((c.zoom - 1.0).abs() < 1e-5, "back out: {}", c.zoom);
 
         for _ in 0..500 {
-            c.zoom_by(1.0, 0.1);
+            zoom_centered(&mut c, 1.0);
         }
         assert_eq!(c.zoom, ZOOM_MIN);
         for _ in 0..1000 {
-            c.zoom_by(-1.0, 0.1);
+            zoom_centered(&mut c, -1.0);
         }
         assert_eq!(c.zoom, ZOOM_MAX);
+    }
+
+    #[test]
+    fn walking_in_reaches_a_pivot_deep_in_the_scene() {
+        // A deep window used to be unreachable (asymptotic travel); a walk arrives.
+        let mut c = CameraController::default();
+        let deep = Vector3::new(0.0, 0.0, -12.0);
+        for _ in 0..120 {
+            c.zoom_toward(deep, 1.0, 0.1);
+        }
+        assert!(
+            (c.pan - deep).magnitude() < 0.2,
+            "should reach the deep pivot, stopped at {:?}",
+            c.pan
+        );
     }
 
     /// Where the eye ends up for a given controller state, mirroring how
@@ -193,7 +221,7 @@ mod tests {
         for _ in 0..200 {
             c.zoom_toward(pivot, 1.0, 0.1);
         }
-        assert_eq!(c.zoom, ZOOM_MIN, "zoom should bottom out");
+        assert_eq!(c.zoom, ZOOM_MIN, "zoom should bottom out, then walk");
         assert!(
             (c.pan - pivot).magnitude() < 0.05,
             "scrolling in at a point should arrive at it, stopped at {:?}",
@@ -222,15 +250,15 @@ mod tests {
     }
 
     #[test]
-    fn zooming_out_never_dollies_backwards_through_the_far_clamp() {
+    fn zooming_out_pins_at_the_far_clamp_without_running_away() {
         let mut c = CameraController::default();
         let pivot = Vector3::new(5.0, 0.0, 0.0);
         for _ in 0..200 {
             c.zoom_toward(pivot, -1.0, 0.1);
         }
         assert_eq!(c.zoom, ZOOM_MAX);
-        // Past the far clamp the residual is discarded, so the camera parks rather
-        // than being flung geometrically into the void.
+        // Past the far clamp we pin instead of dollying, so the camera parks rather
+        // than being flung into the void.
         assert!(
             c.pan.magnitude() < 100.0,
             "camera ran away to {:?} on repeated zoom-out",
@@ -239,11 +267,11 @@ mod tests {
     }
 
     #[test]
-    fn zooming_by_keyboard_pivots_on_the_view_centre() {
+    fn keyboard_zoom_about_the_look_at_does_not_pan_within_range() {
         let mut c = CameraController::default();
         c.pan_by(Vector3::new(1.0, 2.0, 3.0));
         let before = c.pan;
-        c.zoom_by(1.0, 0.1);
+        zoom_centered(&mut c, 1.0);
         assert!((c.pan - before).magnitude() < 1e-6, "keyboard zoom must not pan");
         assert!((c.zoom - 0.9).abs() < 1e-5);
     }
@@ -273,7 +301,7 @@ mod tests {
     fn reset_eases_back_to_the_configured_framing() {
         let mut c = CameraController::default();
         c.orbit(45.0, 20.0);
-        c.zoom_by(3.0, 0.1);
+        zoom_centered(&mut c, 3.0);
         settle(&mut c);
 
         c.reset();

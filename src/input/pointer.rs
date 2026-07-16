@@ -15,6 +15,7 @@ impl SpatilState {
 
     pub fn dispatch_pointer_motion_absolute(&mut self, x: f64, y: f64) {
         self.pointer_location = (x, y).into();
+        self.pointer_moved = true;
         // NDC cursor for the Aether parallax camera (y up), in output pixel space.
         let (w, h) = (
             self.wgpu_state.width.max(1) as f64,

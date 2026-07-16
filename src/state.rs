@@ -82,6 +82,7 @@ pub struct SpatilState {
     pub drm: Option<crate::backend::drm::DrmOutput>,
     pub drag: Option<Drag>,
     pub navigate: Option<Navigate>,
+    pub pointer_moved: bool,
     window_id_counter: u32,
 }
 
@@ -232,6 +233,7 @@ impl SpatilState {
             drm: None,
             drag: None,
             navigate: None,
+            pointer_moved: false,
             window_id_counter: 1,
         }
     }
@@ -515,8 +517,6 @@ impl SpatilState {
         tracing::info!("configuration reloaded");
     }
 
-    /// Aether panes billboard; Strata windows hold their pitch; a raised window is
-    /// posed by the presentation path and opts out of both.
     pub fn apply_billboards(&mut self, mode: SceneMode) {
         let raised = self.modal_window().map(|(entity, _)| entity);
         let entities: Vec<_> = self
