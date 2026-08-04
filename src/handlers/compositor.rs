@@ -14,6 +14,25 @@ use smithay::{delegate_compositor, delegate_shm};
 use crate::state::SpatilState;
 use crate::state::client::ClientState;
 
+pub fn tree_contains(root: &WlSurface, surface: &WlSurface) -> bool {
+    if root == surface {
+        return true;
+    }
+    let mut found = false;
+    with_surface_tree_downward(
+        root,
+        (),
+        |_, _, _| TraversalAction::DoChildren(()),
+        |s, _, _| {
+            if s == surface {
+                found = true;
+            }
+        },
+        |_, _, _| true,
+    );
+    found
+}
+
 impl CompositorHandler for SpatilState {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
@@ -27,29 +46,20 @@ impl CompositorHandler for SpatilState {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        self.popups.commit(surface);
+
         let mut target_toplevel = None;
         for toplevel in &self.toplevels {
-            if toplevel.wl_surface() == surface {
-                target_toplevel = Some(toplevel.clone());
-                break;
-            }
-            let mut found = false;
-            with_surface_tree_downward(
-                toplevel.wl_surface(),
-                (),
-                |_, _, _| TraversalAction::DoChildren(()),
-                |s, _, _| {
-                    if s == surface {
-                        found = true;
-                    }
-                },
-                |_, _, _| true,
-            );
-            if found {
+            if tree_contains(toplevel.wl_surface(), surface) {
                 target_toplevel = Some(toplevel.clone());
                 break;
             }
         }
+
+        let popup_root = match &target_toplevel {
+            Some(_) => None,
+            None => self.popup_render_root(surface),
+        };
 
         let is_toplevel = target_toplevel
             .as_ref()
@@ -57,13 +67,11 @@ impl CompositorHandler for SpatilState {
             .unwrap_or(false);
         tracing::trace!(surface_id = ?surface.id(), is_toplevel, "Received a buffer commit!");
 
-        let Some(toplevel) = target_toplevel else {
-            // Not part of any tracked toplevel's surface tree.
-            // Temporary until real surface-tree composition lands: we only draw
-            // surfaces that belong to a known xdg_toplevel.
-            return;
+        let target_surface_id = match (&target_toplevel, &popup_root) {
+            (Some(toplevel), _) => toplevel.wl_surface().id(),
+            (None, Some(popup)) => popup.id(),
+            (None, None) => return,
         };
-        let target_surface_id = toplevel.wl_surface().id();
 
         let has_buffer = with_states(surface, |states| {
             states
@@ -81,7 +89,10 @@ impl CompositorHandler for SpatilState {
         // attach a buffer — the initial bufferless commit that kicks off the
         // handshake is legal and must be allowed through.
         if has_buffer {
-            if is_toplevel && !toplevel.ensure_configured() {
+            if is_toplevel
+                && let Some(toplevel) = &target_toplevel
+                && !toplevel.ensure_configured()
+            {
                 return;
             }
         } else {
@@ -89,9 +100,10 @@ impl CompositorHandler for SpatilState {
             return;
         }
 
-        // First content commit: start the postponement clock and let scripts
-        // place the window before it is revealed. Fires once per toplevel.
-        if let Some(window_id) = self.mark_committed(&target_surface_id) {
+        if let Some(popup) = &popup_root {
+            let root = self.root_surface(popup);
+            self.refresh_popup_offsets(&root);
+        } else if let Some(window_id) = self.mark_committed(&target_surface_id) {
             self.broadcast_event(&crate::ipc::SpatilEvent::new("window_committed", window_id));
         }
 
@@ -125,7 +137,7 @@ impl CompositorHandler for SpatilState {
                     .wgpu_state
                     .dmabuf_textures
                     .get(&buffer.id())
-                    .map(|(_, w, h, _)| (*w, *h));
+                    .map(|(_, w, h, _, _)| (*w, *h));
                 if let Some((w, h)) = dims {
                     self.set_window_size(&target_surface_id, w, h);
                 }
@@ -162,14 +174,16 @@ impl CompositorHandler for SpatilState {
                 data.width as u32,
                 data.height as u32,
                 data.stride as u32,
+                data.format == wl_shm::Format::Argb8888,
             ))
         });
 
         match import_result {
-            Ok(Some((bytes, width, height, stride))) => {
+            Ok(Some((bytes, width, height, stride, has_alpha))) => {
                 // HACK: Ignore tiny subsurface commits (like Kitty's CSD window decorations)
-                // so they don't overwrite the main terminal texture in our single-quad renderer.
-                if !is_toplevel && (width < 100 || height < 100) {
+                // so they don't overwrite the main terminal texture in our single-quad
+                // renderer.
+                if popup_root.is_none() && !is_toplevel && (width < 100 || height < 100) {
                     tracing::info!(surface_id = ?surface.id(), width, height, "ignoring tiny subsurface SHM texture to prevent overwriting the main quad");
                 } else {
                     tracing::info!(surface_id = ?surface.id(), width, height, stride, "uploading SHM texture for toplevel surface");
@@ -179,6 +193,7 @@ impl CompositorHandler for SpatilState {
                         height,
                         stride,
                         &bytes,
+                        has_alpha,
                     );
                     self.set_window_size(&target_surface_id, width, height);
                 }

@@ -1,4 +1,5 @@
 pub mod client;
+pub mod popups;
 pub mod presentation;
 
 use std::collections::HashMap;
@@ -14,7 +15,7 @@ use crate::input::drag::{Drag, Navigate};
 use crate::renderer::WgpuState;
 use crate::scene::WORLD_SCALE;
 use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete, Physics, Tween};
-use crate::scene::components::{Billboard, Placement, Transform, WaylandSurface};
+use crate::scene::components::{Billboard, Placement, Popup, Transform, WaylandSurface};
 use crate::scene::mode::{SceneMode, default_transform};
 use crate::scene::systems::update_map_visibility;
 use smithay::backend::allocator::{Format, Fourcc};
@@ -24,6 +25,7 @@ use smithay::utils::{Logical, Point};
 use smithay::reexports::calloop::{LoopHandle, LoopSignal};
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::ObjectId;
+use smithay::desktop::PopupManager;
 use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufState};
 use smithay::wayland::output::OutputManagerState;
@@ -68,6 +70,7 @@ pub struct SpatilState {
     pub dmabuf_state: DmabufState,
     pub dmabuf_global: Option<DmabufGlobal>,
     pub toplevels: Vec<ToplevelSurface>,
+    pub popups: PopupManager,
     pub seat_state: SeatState<SpatilState>,
     pub seat: Seat<SpatilState>,
     pub pointer_location: Point<f64, Logical>,
@@ -219,6 +222,7 @@ impl SpatilState {
             dmabuf_state,
             dmabuf_global,
             toplevels: Vec::new(),
+            popups: PopupManager::default(),
             seat_state,
             seat,
             pointer_location: (0.0, 0.0).into(),
@@ -243,14 +247,20 @@ impl SpatilState {
     /// it real clients freeze after their first.
     pub fn send_frame_callbacks(&self) {
         let elapsed = self.start_time.elapsed();
-        for toplevel in &self.toplevels {
+        let send = |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface| {
             smithay::desktop::utils::send_frames_surface_tree(
-                toplevel.wl_surface(),
+                surface,
                 &self.output,
                 elapsed,
                 Some(Duration::ZERO),
                 |_, _| Some(self.output.clone()),
             );
+        };
+        for toplevel in &self.toplevels {
+            send(toplevel.wl_surface());
+            for (popup, _) in PopupManager::popups_for_surface(toplevel.wl_surface()) {
+                send(popup.wl_surface());
+            }
         }
     }
 
@@ -289,6 +299,7 @@ impl SpatilState {
     }
 
     pub fn tick_animations(&mut self, dt_ms: f32) {
+        self.popups.cleanup();
         let dt_ms = dt_ms.min(50.0);
         for id in animation::update(&mut self.world, dt_ms) {
             self.wgpu_state.remove_texture(&id);
@@ -367,12 +378,18 @@ impl SpatilState {
             height as f32 / WORLD_SCALE,
             1.0,
         );
-        for (_entity, (transform, surface, tween)) in
-            self.world
-                .query_mut::<(&mut Transform, &WaylandSurface, Option<&mut Tween>)>()
-        {
+        for (_entity, (transform, surface, popup, tween)) in self.world.query_mut::<(
+            &mut Transform,
+            &mut WaylandSurface,
+            Option<&Popup>,
+            Option<&mut Tween>,
+        )>() {
             if &surface.id != surface_id {
                 continue;
+            }
+            surface.size = (width, height);
+            if popup.is_some() {
+                return;
             }
             if let Some(tween) = tween {
                 let ratio = component_ratio(scale, tween.end.scale);
@@ -454,12 +471,12 @@ impl SpatilState {
         // A window hand-placed in the target mode goes back exactly where the user
         // left it; only one that has never been there gets laid out.
         let mut plans = Vec::new();
-        for (entity, (transform, surface, placement)) in
-            self.world
-                .query::<(&Transform, &WaylandSurface, Option<&Placement>)>()
-                .iter()
+        for (entity, (transform, surface, placement, popup)) in self
+            .world
+            .query::<(&Transform, &WaylandSurface, Option<&Placement>, Option<&Popup>)>()
+            .iter()
         {
-            if surface.closing {
+            if surface.closing || popup.is_some() {
                 continue;
             }
             let start = AnimSnapshot::of(transform);
@@ -521,8 +538,9 @@ impl SpatilState {
         let raised = self.modal_window().map(|(entity, _)| entity);
         let entities: Vec<_> = self
             .world
-            .query::<&WaylandSurface>()
+            .query::<(&WaylandSurface, Option<&Popup>)>()
             .iter()
+            .filter(|(_, (_, popup))| popup.is_none())
             .map(|(entity, _)| entity)
             .collect();
         for entity in entities {
@@ -536,9 +554,9 @@ impl SpatilState {
 
     fn placeable_entities(&self) -> Vec<hecs::Entity> {
         self.world
-            .query::<&WaylandSurface>()
+            .query::<(&WaylandSurface, Option<&Popup>)>()
             .iter()
-            .filter(|(_, s)| !s.closing)
+            .filter(|(_, (s, popup))| !s.closing && popup.is_none())
             .map(|(entity, _)| entity)
             .collect()
     }

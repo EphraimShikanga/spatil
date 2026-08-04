@@ -6,7 +6,10 @@ struct QuadUniform {
     border_width: f32,
     tint: vec4<f32>,
     border_color: vec4<f32>,
+    surface_alpha: f32,
 };
+
+const ALPHA_CUTOFF: f32 = 0.004;
 @group(0) @binding(0)
 var<uniform> quad: QuadUniform;
 
@@ -40,11 +43,19 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let surface = textureSample(t_diffuse, s_diffuse, in.uv);
-    let rgb = mix(surface.rgb, quad.tint.rgb, quad.tint.a);
-    // Opacity comes from the uniform, never the sampled alpha: Xrgb8888's alpha
-    // byte is undefined. Strata passes alpha=1 (opaque, as before); Aether passes
-    // glass_alpha for translucent panes.
-    var color = vec4<f32>(rgb, quad.alpha);
+
+    var texel = surface.rgb;
+    var texel_alpha = 1.0;
+    if (quad.surface_alpha > 0.5) {
+        texel_alpha = surface.a;
+        if (texel_alpha < ALPHA_CUTOFF) {
+            discard;
+        }
+        texel = surface.rgb / texel_alpha;
+    }
+
+    let rgb = mix(texel, quad.tint.rgb, quad.tint.a);
+    var color = vec4<f32>(rgb, quad.alpha * texel_alpha);
 
     if (quad.border_width > 0.0) {
         // World units, not quad fractions: an uneven scale would otherwise make
@@ -56,7 +67,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             min(in.quad_uv.y, 1.0 - in.quad_uv.y) * height,
         );
         if (edge < quad.border_width) {
-            color = vec4<f32>(quad.border_color.rgb, max(quad.alpha, quad.border_color.a));
+            color = vec4<f32>(
+                quad.border_color.rgb,
+                max(quad.alpha, quad.border_color.a) * texel_alpha,
+            );
         }
     }
     return color;

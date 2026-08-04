@@ -1,4 +1,4 @@
-use smithay::backend::allocator::Buffer as _;
+use smithay::backend::allocator::{Buffer as _, Fourcc};
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::delegate_dmabuf;
 use smithay::reexports::wayland_server::Resource;
@@ -36,9 +36,10 @@ impl DmabufHandler for SpatilState {
                         y_inverted = dmabuf.y_inverted(),
                         "imported dmabuf as zero-copy texture"
                     );
+                    let has_alpha = dmabuf.format().code == Fourcc::Argb8888;
                     self.wgpu_state
                         .dmabuf_textures
-                        .insert(buffer.id(), (texture, width, height, uv_scale));
+                        .insert(buffer.id(), (texture, width, height, uv_scale, has_alpha));
                 }
                 Err(_) => {
                     tracing::warn!(

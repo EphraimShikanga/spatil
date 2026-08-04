@@ -103,15 +103,16 @@ impl SpatilState {
             _ => return false,
         };
 
-        if let Some(hit) = raycast_entity(self, cursor)
-            && let Ok(position) = self.world.get::<&Transform>(hit.entity).map(|t| t.translation)
+        if let Some(hit) = raycast_entity(self, cursor).map(|hit| (self.window_entity(hit.entity), hit))
+            && let Ok(position) = self.world.get::<&Transform>(hit.0).map(|t| t.translation)
         {
+            let (target, hit) = hit;
             let plane_normal = -self.wgpu_state.camera.forward();
-            self.world.remove_one::<Velocity>(hit.entity).ok();
-            self.world.remove_one::<Spring>(hit.entity).ok();
+            self.world.remove_one::<Velocity>(target).ok();
+            self.world.remove_one::<Spring>(target).ok();
             self.drag = Some(Drag {
                 kind: drag_kind,
-                entity: hit.entity,
+                entity: target,
                 grab_offset: position - hit.world_hit,
                 plane_normal,
                 plane_point: position,
@@ -122,7 +123,7 @@ impl SpatilState {
                 velocity: Vector3::zero(),
             });
             self.lift_dragged_window();
-            self.focus_entity(hit.entity);
+            self.focus_entity(target);
             return true;
         }
 

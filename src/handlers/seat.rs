@@ -16,14 +16,11 @@ impl SeatHandler for SpatilState {
     }
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
-        // The focus outline is drawn from this; the seat is the one place that
-        // tracks focus.
-        self.wgpu_state.focused_surface = focused.map(|s| s.id());
+        let focused = focused.map(|surface| self.root_surface(surface));
+        self.wgpu_state.focused_surface = focused.as_ref().map(|s| s.id());
 
-        // Keep each toplevel's `Activated` flag in sync with keyboard focus, so
-        // clients render their focused state (e.g. a solid vs hollow cursor).
         for toplevel in &self.toplevels {
-            let is_focused = focused == Some(toplevel.wl_surface());
+            let is_focused = focused.as_ref() == Some(toplevel.wl_surface());
             toplevel.with_pending_state(|state| {
                 if is_focused {
                     state.states.set(xdg_toplevel::State::Activated);

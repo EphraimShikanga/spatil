@@ -20,7 +20,7 @@ use smithay::reexports::wayland_server::backend::ObjectId;
 use crate::config::{Display, Input, SceneGraph, SpatilConfig};
 use crate::scene::animation::SceneTransition;
 use crate::scene::camera_controller::CameraController;
-use crate::scene::components::{Presentation, Transform, WaylandSurface, WindowState};
+use crate::scene::components::{Popup, Presentation, Transform, WaylandSurface, WindowState};
 use crate::scene::mode::{self, AetherView, SceneMode};
 use crate::scene::systems::update_world_matrices;
 
@@ -34,6 +34,8 @@ use texture::TexturedQuad;
 
 pub use dmabuf::{query_dmabuf_modifiers, query_render_modifiers};
 pub(crate) use dmabuf::query_render_node_dev_t;
+
+const POPUP_SORT_EPSILON: f32 = 1e-3;
 
 fn lerp4(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     [
@@ -129,7 +131,7 @@ pub struct WgpuState {
     pub aether: AetherParams,
     pub interaction: InteractionParams,
     pub quads: Vec<(ObjectId, TexturedQuad)>,
-    pub dmabuf_textures: HashMap<ObjectId, (wgpu::Texture, u32, u32, [f32; 2])>,
+    pub dmabuf_textures: HashMap<ObjectId, (wgpu::Texture, u32, u32, [f32; 2], bool)>,
     pub main_device_id: Option<u64>,
     pub dmabuf_modifiers: Vec<Modifier>,
 }
@@ -314,6 +316,7 @@ impl WgpuState {
         height: u32,
         stride: u32,
         bytes: &[u8],
+        has_alpha: bool,
     ) {
         let quad = TexturedQuad::from_bytes(
             &self.device,
@@ -324,6 +327,7 @@ impl WgpuState {
             height,
             stride,
             bytes,
+            has_alpha,
         );
         self.set_quad(id, quad);
     }
@@ -331,7 +335,9 @@ impl WgpuState {
     /// Attaches a previously imported dmabuf texture (keyed by `wl_buffer` id) to a
     /// surface's quad. Returns `false` if no imported texture exists for that buffer.
     pub fn attach_dmabuf_texture(&mut self, surface_id: ObjectId, buffer_id: &ObjectId) -> bool {
-        let Some((texture, width, height, uv_scale)) = self.dmabuf_textures.get(buffer_id) else {
+        let Some((texture, width, height, uv_scale, has_alpha)) =
+            self.dmabuf_textures.get(buffer_id)
+        else {
             return false;
         };
         let quad = TexturedQuad::from_wgpu_texture(
@@ -342,6 +348,7 @@ impl WgpuState {
             *width,
             *height,
             *uv_scale,
+            *has_alpha,
         );
         self.set_quad(surface_id, quad);
         true
@@ -453,10 +460,17 @@ impl WgpuState {
 
         // A fullscreen window is the whole picture: the world behind is not dimmed,
         // it is not drawn.
-        let world_hidden = world
+        let raised: Option<(hecs::Entity, WindowState)> = world
             .query::<(&Presentation, &WaylandSurface)>()
             .iter()
-            .any(|(_, (p, s))| p.state == WindowState::Fullscreen && s.visible);
+            .find(|(_, (p, s))| p.state != WindowState::Ambient && s.visible)
+            .map(|(entity, (p, _))| (entity, p.state));
+        let world_hidden = matches!(raised, Some((_, WindowState::Fullscreen)));
+        let depth_key: HashMap<hecs::Entity, f32> = world
+            .query::<&Transform>()
+            .iter()
+            .map(|(entity, transform)| (entity, transform.world_matrix.w.z))
+            .collect();
         let field_alpha = if world_hidden { 0.0 } else { presence };
         let grid_alpha = if world_hidden { 0.0 } else { 1.0 - presence };
         let draw_particles = field_alpha > 0.001;
@@ -478,15 +492,25 @@ impl WgpuState {
         // Each quad writes its own uniform buffer so both the shadow and color
         // passes read final values without a mid-pass rewrite.
         let mut draw_list: Vec<(usize, f32)> = Vec::new();
-        let mut modal_list: Vec<usize> = Vec::new();
-        for (_id, (transform, wayland_surface, presentation)) in world
-            .query::<(&Transform, &WaylandSurface, Option<&Presentation>)>()
+        let mut modal_list: Vec<(usize, f32)> = Vec::new();
+        for (entity, (transform, wayland_surface, presentation, popup)) in world
+            .query::<(
+                &Transform,
+                &WaylandSurface,
+                Option<&Presentation>,
+                Option<&Popup>,
+            )>()
             .iter()
         {
             if !wayland_surface.visible {
                 continue;
             }
-            let state = presentation.map_or(WindowState::Ambient, |p| p.state);
+            let state = match popup {
+                Some(popup) => raised
+                    .filter(|(raised, _)| *raised == popup.root)
+                    .map_or(WindowState::Ambient, |(_, state)| state),
+                None => presentation.map_or(WindowState::Ambient, |p| p.state),
+            };
             let modal = state != WindowState::Ambient;
             if world_hidden && !modal {
                 continue;
@@ -519,19 +543,28 @@ impl WgpuState {
                         },
                         tint: window_tint,
                         border_color: self.interaction.focus_border_color,
+                        surface_alpha: if quad.has_alpha { 1.0 } else { 0.0 },
+                        _pad: [0.0; 3],
                     }]),
                 );
+                let key = match popup {
+                    Some(popup) => {
+                        depth_key.get(&popup.root).copied().unwrap_or(model.w.z)
+                            + (popup.depth + 1) as f32 * POPUP_SORT_EPSILON
+                    }
+                    None => depth_key.get(&entity).copied().unwrap_or(model.w.z),
+                };
                 if modal {
-                    modal_list.push(idx);
+                    modal_list.push((idx, key));
                 } else {
-                    draw_list.push((idx, model.w.z));
+                    draw_list.push((idx, key));
                 }
             }
         }
-        // Back-to-front so translucent windows composite correctly.
-        if presence > 0.001 {
-            draw_list.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        }
+        let back_to_front =
+            |a: &(usize, f32), b: &(usize, f32)| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal);
+        draw_list.sort_by(back_to_front);
+        modal_list.sort_by(back_to_front);
 
         // Runs even with no windows, so the map is cleared to 1.0 (unoccluded)
         // every frame rather than sampled stale by the grid.
@@ -698,7 +731,7 @@ impl WgpuState {
                     self.quad_pipeline.index_buffer.slice(..),
                     wgpu::IndexFormat::Uint16,
                 );
-                for &idx in &modal_list {
+                for &(idx, _) in &modal_list {
                     let quad = &self.quads[idx].1;
                     render_pass.set_bind_group(0, &quad.bind_group, &[]);
                     render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);

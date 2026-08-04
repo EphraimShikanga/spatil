@@ -1,13 +1,17 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
-use cgmath::Vector3;
+use cgmath::{Matrix4, Quaternion, Vector3};
 use hecs::{Entity, World};
 
 use crate::config::Direction;
 use crate::renderer::pipeline::Camera;
+use crate::scene::WORLD_SCALE;
 use crate::scene::animation::Tween;
-use crate::scene::components::{Billboard, Parent, Transform, WaylandSurface};
+use crate::scene::components::{Billboard, Parent, Popup, Transform, WaylandSurface};
 use crate::scene::mode::billboard_rotation;
+
+const POPUP_LIFT: f32 = 0.02;
 
 pub fn strata_window_placement(window_id: u32) -> Vector3<f32> {
     const COLS: u32 = 3;
@@ -71,12 +75,12 @@ pub fn focus_in_direction(
     };
 
     let candidates: Vec<_> = world
-        .query::<(&Transform, &WaylandSurface)>()
+        .query::<(&Transform, &WaylandSurface, Option<&Popup>)>()
         .iter()
-        .filter(|(entity, (_, surface))| {
-            *entity != from && surface.visible && !surface.closing
+        .filter(|(entity, (_, surface, popup))| {
+            *entity != from && surface.visible && !surface.closing && popup.is_none()
         })
-        .map(|(entity, (transform, _))| (entity, project(transform.translation)))
+        .map(|(entity, (transform, _, _))| (entity, project(transform.translation)))
         .collect();
 
     pick_in_direction(project(origin), &candidates, direction)
@@ -121,6 +125,89 @@ fn pick_in_direction(
     forward.or(wrapped).map(|(_, entity)| entity)
 }
 
+fn local_matrix(transform: &Transform) -> Matrix4<f32> {
+    let translation = Matrix4::from_translation(transform.translation);
+    let rotation = Matrix4::from(transform.rotation);
+    let scale = Matrix4::from_nonuniform_scale(
+        transform.scale.x,
+        transform.scale.y,
+        transform.scale.z,
+    );
+    translation * rotation * scale
+}
+
+fn popup_pose(
+    root_translation: Vector3<f32>,
+    root_rotation: Quaternion<f32>,
+    root_scale: Vector3<f32>,
+    root_size: (u32, u32),
+    size: (u32, u32),
+    offset: (i32, i32),
+    depth: u32,
+) -> Option<(Vector3<f32>, Vector3<f32>)> {
+    if root_size.0 == 0 || root_size.1 == 0 || size.0 == 0 || size.1 == 0 {
+        return None;
+    }
+    let (root_w, root_h) = (root_size.0 as f32, root_size.1 as f32);
+    let fx = (offset.0 as f32 + size.0 as f32 / 2.0) / root_w - 0.5;
+    let fy = 0.5 - (offset.1 as f32 + size.1 as f32 / 2.0) / root_h;
+    let magnification = root_scale.x * WORLD_SCALE / root_w;
+    let local = Vector3::new(
+        fx * root_scale.x,
+        fy * root_scale.y,
+        (depth + 1) as f32 * POPUP_LIFT,
+    );
+    Some((
+        root_translation + root_rotation * local,
+        Vector3::new(
+            size.0 as f32 / WORLD_SCALE * magnification,
+            size.1 as f32 / WORLD_SCALE * magnification,
+            1.0,
+        ),
+    ))
+}
+
+fn pose_popups(world: &mut World) {
+    let roots: HashMap<Entity, (Vector3<f32>, Quaternion<f32>, Vector3<f32>, (u32, u32), f32)> =
+        world
+            .query::<(&Transform, &WaylandSurface)>()
+            .iter()
+            .map(|(entity, (t, s))| {
+                (entity, (t.translation, t.rotation, t.scale, s.size, t.opacity))
+            })
+            .collect();
+
+    let popups: Vec<_> = world
+        .query::<(&Popup, &WaylandSurface)>()
+        .iter()
+        .map(|(entity, (popup, surface))| {
+            (entity, popup.root, popup.depth, popup.offset, surface.size)
+        })
+        .collect();
+
+    for (entity, root, depth, offset, size) in popups {
+        let Some(&(root_pos, root_rot, root_scale, root_size, root_opacity)) = roots.get(&root)
+        else {
+            continue;
+        };
+        let Some((translation, scale)) = popup_pose(
+            root_pos, root_rot, root_scale, root_size, size, offset, depth,
+        ) else {
+            continue;
+        };
+
+        let Ok(transform) = world.query_one_mut::<&mut Transform>(entity) else {
+            continue;
+        };
+        transform.translation = translation;
+        transform.rotation = root_rot;
+        transform.scale = scale;
+        transform.opacity = root_opacity;
+        let matrix = local_matrix(transform);
+        transform.world_matrix = matrix;
+    }
+}
+
 pub fn update_world_matrices(world: &mut World, camera: &Camera) {
     let facing = billboard_rotation(camera.eye, camera.target);
 
@@ -131,15 +218,11 @@ pub fn update_world_matrices(world: &mut World, camera: &Camera) {
         if billboard.is_some() && tween.is_none() {
             transform.rotation = facing;
         }
-        let translation = cgmath::Matrix4::from_translation(transform.translation);
-        let rotation = cgmath::Matrix4::from(transform.rotation);
-        let scale = cgmath::Matrix4::from_nonuniform_scale(
-            transform.scale.x,
-            transform.scale.y,
-            transform.scale.z,
-        );
-        transform.world_matrix = translation * rotation * scale;
+        let matrix = local_matrix(transform);
+        transform.world_matrix = matrix;
     }
+
+    pose_popups(world);
 
     // Second pass: Apply parent transforms
     // Collect updates first to avoid multiple mutable borrows
@@ -163,6 +246,7 @@ pub fn update_world_matrices(world: &mut World, camera: &Camera) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cgmath::{One, Rotation3};
 
     fn scene() -> (World, Vec<Entity>) {
         let mut world = World::new();
@@ -213,5 +297,94 @@ mod tests {
     #[test]
     fn an_empty_scene_has_nothing_to_focus() {
         assert_eq!(pick_in_direction((0.0, 0.0), &[], Direction::Left), None);
+    }
+
+    /// An 800x600 window whose quad is the buffer size in world units.
+    fn root() -> (Vector3<f32>, Quaternion<f32>, Vector3<f32>, (u32, u32)) {
+        (
+            Vector3::new(0.0, 0.0, 0.0),
+            Quaternion::one(),
+            Vector3::new(0.8, 0.6, 1.0),
+            (800, 600),
+        )
+    }
+
+    fn pose(
+        offset: (i32, i32),
+        size: (u32, u32),
+        depth: u32,
+    ) -> (Vector3<f32>, Vector3<f32>) {
+        let (translation, rotation, scale, root_size) = root();
+        popup_pose(translation, rotation, scale, root_size, size, offset, depth)
+            .expect("both sides have committed")
+    }
+
+    #[test]
+    fn a_popup_lands_where_the_protocol_offset_puts_it_on_the_window() {
+        // A 200x100 menu at the window's top-left corner: its centre sits a tenth of the
+        // window in from the left edge and a twelfth down from the top.
+        let (translation, scale) = pose((0, 0), (200, 100), 0);
+        assert!((translation.x - (-0.3)).abs() < 1e-5, "{translation:?}");
+        assert!((translation.y - 0.25).abs() < 1e-5, "{translation:?}");
+        assert!((scale.x - 0.2).abs() < 1e-5, "{scale:?}");
+        assert!((scale.y - 0.1).abs() < 1e-5, "{scale:?}");
+
+        // Centred on the window: dead centre, whatever the popup's own size.
+        let (centered, _) = pose((300, 250), (200, 100), 0);
+        assert!(centered.x.abs() < 1e-5 && centered.y.abs() < 1e-5, "{centered:?}");
+    }
+
+    #[test]
+    fn each_popup_level_stacks_further_toward_the_viewer() {
+        let (menu, _) = pose((0, 0), (200, 100), 0);
+        let (submenu, _) = pose((0, 0), (200, 100), 1);
+        assert!(menu.z > 0.0, "a popup sits in front of its window, not in it");
+        assert!(submenu.z > menu.z, "{submenu:?} should stack over {menu:?}");
+    }
+
+    #[test]
+    fn a_popup_rides_the_window_through_a_tween() {
+        // Mid open-animation the window is at half scale while its buffer is unchanged:
+        // the popup must halve with it, and stay on the same spot of the pane.
+        let (translation, rotation, scale, root_size) = root();
+        let (full, full_scale) = pose((0, 0), (200, 100), 0);
+        let (half, half_scale) = popup_pose(
+            translation,
+            rotation,
+            scale / 2.0,
+            root_size,
+            (200, 100),
+            (0, 0),
+            0,
+        )
+        .expect("committed");
+        assert!((half.x - full.x / 2.0).abs() < 1e-5, "{half:?} vs {full:?}");
+        assert!((half.y - full.y / 2.0).abs() < 1e-5, "{half:?} vs {full:?}");
+        assert!((half_scale.x - full_scale.x / 2.0).abs() < 1e-5);
+        assert!((half_scale.y - full_scale.y / 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_popup_turns_with_its_window() {
+        // Yawed 90 degrees about Y, the pane's local +x becomes world -z, so an offset
+        // that was to the left of the window is now behind it.
+        let (translation, _, scale, root_size) = root();
+        let rotation = Quaternion::from_angle_y(cgmath::Deg(90.0));
+        let (posed, _) =
+            popup_pose(translation, rotation, scale, root_size, (200, 100), (0, 0), 0)
+                .expect("committed");
+        assert!((posed.z - 0.3).abs() < 1e-5, "{posed:?}");
+        assert!(posed.x.abs() < 0.1, "{posed:?}");
+    }
+
+    #[test]
+    fn a_popup_has_no_pose_before_either_side_has_committed() {
+        let (translation, rotation, scale, _) = root();
+        assert!(
+            popup_pose(translation, rotation, scale, (0, 0), (200, 100), (0, 0), 0).is_none()
+        );
+        assert!(
+            popup_pose(translation, rotation, scale, (800, 600), (0, 0), (0, 0), 0).is_none()
+        );
     }
 }

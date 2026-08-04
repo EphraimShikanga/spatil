@@ -2,7 +2,9 @@ use std::time::Instant;
 
 use cgmath::{Matrix4, Quaternion, Vector3, SquareMatrix, Zero, One};
 use hecs::Entity;
+use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::backend::ObjectId;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::scene::animation::AnimSnapshot;
 use crate::scene::mode::SceneMode;
@@ -83,23 +85,35 @@ pub struct Presentation {
 }
 
 pub struct WaylandSurface {
+    pub surface: WlSurface,
     pub id: ObjectId,
     pub window_id: u32,
     pub visible: bool,
     pub closing: bool,
     pub committed_at: Option<Instant>,
+    pub size: (u32, u32),
 }
 
 impl WaylandSurface {
-    pub fn new(id: ObjectId, window_id: u32) -> Self {
+    pub fn new(surface: WlSurface, window_id: u32) -> Self {
         Self {
-            id,
+            id: surface.id(),
+            surface,
             window_id,
             visible: false,
             closing: false,
             committed_at: None,
+            size: (0, 0),
         }
     }
+}
+
+pub const POPUP_WINDOW_ID: u32 = 0;
+
+pub struct Popup {
+    pub root: Entity,
+    pub depth: u32,
+    pub offset: (i32, i32),
 }
 
 pub struct Parent {

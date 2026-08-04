@@ -1,6 +1,5 @@
 use cgmath::{InnerSpace, Matrix4, SquareMatrix, Vector3, Vector4};
 use hecs::Entity;
-use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point};
 
@@ -93,18 +92,9 @@ pub fn raycast_entity(state: &SpatilState, cursor_pos: Point<f64, Logical>) -> O
         let local_point =
             Point::<f64, Logical>::from((u * quad.width as f64, v * quad.height as f64));
 
-        let Some(wl_surface) = state
-            .toplevels
-            .iter()
-            .find(|t| t.wl_surface().id() == surface.id)
-            .map(|t| t.wl_surface().clone())
-        else {
-            continue;
-        };
-
         best = Some((
             distance,
-            SurfaceHit { entity, surface: wl_surface, world_hit, local_point },
+            SurfaceHit { entity, surface: surface.surface.clone(), world_hit, local_point },
         ));
     }
 

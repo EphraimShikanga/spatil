@@ -13,6 +13,7 @@ pub struct TexturedQuad {
     pub width: u32,
     pub height: u32,
     pub uv_scale: [f32; 2],
+    pub has_alpha: bool,
 }
 
 impl TexturedQuad {
@@ -25,6 +26,7 @@ impl TexturedQuad {
         height: u32,
         stride: u32,
         bytes: &[u8],
+        has_alpha: bool,
     ) -> Self {
         let size = wgpu::Extent3d {
             width,
@@ -82,6 +84,7 @@ impl TexturedQuad {
             width,
             height,
             [1.0, 1.0],
+            has_alpha,
         )
     }
 
@@ -94,6 +97,7 @@ impl TexturedQuad {
         width: u32,
         height: u32,
         uv_scale: [f32; 2],
+        has_alpha: bool,
     ) -> Self {
         Self::assemble(
             device,
@@ -103,6 +107,7 @@ impl TexturedQuad {
             width,
             height,
             uv_scale,
+            has_alpha,
         )
     }
 
@@ -114,6 +119,7 @@ impl TexturedQuad {
         width: u32,
         height: u32,
         uv_scale: [f32; 2],
+        has_alpha: bool,
     ) -> Self {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -133,6 +139,8 @@ impl TexturedQuad {
                 border_width: 0.0,
                 tint: [0.0; 4],
                 border_color: [0.0; 4],
+                surface_alpha: if has_alpha { 1.0 } else { 0.0 },
+                _pad: [0.0; 3],
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -173,6 +181,7 @@ impl TexturedQuad {
             width,
             height,
             uv_scale,
+            has_alpha,
         }
     }
 }

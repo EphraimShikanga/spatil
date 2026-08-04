@@ -76,6 +76,8 @@ pub struct QuadUniform {
     pub border_width: f32,
     pub tint: [f32; 4],
     pub border_color: [f32; 4],
+    pub surface_alpha: f32,
+    pub _pad: [f32; 3],
 }
 
 #[repr(C)]

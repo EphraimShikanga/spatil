@@ -1,4 +1,9 @@
 use smithay::delegate_xdg_shell;
+use smithay::desktop::{
+    PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy,
+    find_popup_root_surface,
+};
+use smithay::input::pointer::Focus;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
@@ -19,8 +24,6 @@ impl XdgShellHandler for SpatilState {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // The client must ack this before it may
-        // attach a buffer that rule is enforced in `CompositorHandler::commit`
         let default_size = (
             self.config.windows.default_width,
             self.config.windows.default_height,
@@ -31,8 +34,6 @@ impl XdgShellHandler for SpatilState {
         });
         surface.send_configure();
 
-        // Register the toplevel so `commit` can find it. This is a flat object
-        // registry, not a 2D stacking structure the 3D scene graph will absorb it.
         self.toplevels.push(surface.clone());
 
         let window_id = self.next_window_id();
@@ -44,14 +45,12 @@ impl XdgShellHandler for SpatilState {
         }
         let entity = self.world.spawn((
             transform,
-            WaylandSurface::new(surface.wl_surface().id(), window_id),
+            WaylandSurface::new(surface.wl_surface().clone(), window_id),
         ));
         if mode == SceneMode::Aether {
             let _ = self.world.insert_one(entity, Billboard);
         }
 
-        // Give the new window keyboard focus so the user can type into it right
-        // away. Pointer focus follows the cursor via motion events.
         if let Some(keyboard) = self.seat.get_keyboard() {
             let serial = SERIAL_COUNTER.next_serial();
             keyboard.set_focus(self, Some(surface.wl_surface().clone()), serial);
@@ -74,6 +73,7 @@ impl XdgShellHandler for SpatilState {
         }
 
         if let Some(entity) = entity_to_close {
+            self.despawn_popups_of(entity);
             if self.config.animation.enabled {
                 // The entity outlives its destroyed Wayland surface to play the
                 // exit animation so the despawn + texture release happen when it ends.
@@ -131,24 +131,71 @@ impl XdgShellHandler for SpatilState {
         }
     }
 
-    // Popups: not yet supported. These are required by the trait, so they're
-    // stubbed until popup positioning lands.
-
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {
-        tracing::warn!("xdg_popup requested but popups are not yet supported");
+    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+        let popup = PopupKind::Xdg(surface.clone());
+        if let Err(err) = self.popups.track_popup(popup.clone()) {
+            tracing::warn!("failed to track popup: {err}");
+            return;
+        }
+        if let Err(err) = surface.send_configure() {
+            tracing::warn!("failed to configure popup: {err:?}");
+            return;
+        }
+        self.spawn_popup(&popup);
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
-        tracing::warn!("xdg_popup grab requested but popups are not yet supported");
+    fn grab(&mut self, surface: PopupSurface, _seat: WlSeat, serial: Serial) {
+        let popup = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&popup) else {
+            return;
+        };
+
+        let focused = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        if focused.map(|surface| self.root_surface(&surface)).as_ref() != Some(&root) {
+            let _ = PopupManager::dismiss_popup(&root, &popup);
+            return;
+        }
+
+        let Ok(mut grab) = self.popups.grab_popup(root, popup, &self.seat, serial) else {
+            return;
+        };
+        let (Some(keyboard), Some(pointer)) = (self.seat.get_keyboard(), self.seat.get_pointer())
+        else {
+            return;
+        };
+
+        let nests = |grabbed: bool, has: &dyn Fn(Serial) -> bool| {
+            !grabbed || has(serial) || grab.previous_serial().is_none_or(has)
+        };
+        if !nests(keyboard.is_grabbed(), &|s| keyboard.has_grab(s))
+            || !nests(pointer.is_grabbed(), &|s| pointer.has_grab(s))
+        {
+            grab.ungrab(PopupUngrabStrategy::All);
+            return;
+        }
+
+        keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
     }
 
     fn reposition_request(
         &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
     ) {
-        tracing::warn!("xdg_popup reposition requested but popups are not yet supported");
+        surface.with_pending_state(|state| {
+            state.geometry = positioner.get_geometry();
+            state.positioner = positioner;
+        });
+        surface.send_repositioned(token);
+    }
+
+    fn popup_destroyed(&mut self, surface: PopupSurface) {
+        self.despawn_popup(&surface.wl_surface().id());
     }
 }
 

@@ -80,6 +80,7 @@ impl SpatilState {
         // Click-to-focus
         if button_state == ButtonState::Pressed
             && let Some(keyboard) = self.seat.get_keyboard()
+            && !keyboard.is_grabbed()
         {
             let focus = raycast_surface(self, self.pointer_location).map(|(surface, _)| surface);
             keyboard.set_focus(self, focus, serial);

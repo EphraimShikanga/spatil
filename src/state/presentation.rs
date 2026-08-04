@@ -13,27 +13,20 @@ use crate::state::SpatilState;
 impl SpatilState {
     pub fn focused_entity(&self) -> Option<Entity> {
         let focused = self.seat.get_keyboard()?.current_focus()?;
+        let root = self.root_surface(&focused);
         self.world
             .query::<&WaylandSurface>()
             .iter()
-            .find(|(_, s)| s.id == focused.id() && !s.closing)
+            .find(|(_, s)| s.id == root.id() && !s.closing)
             .map(|(entity, _)| entity)
     }
 
     pub fn focus_entity(&mut self, entity: Entity) {
-        let Some(surface_id) = self
+        let Some(surface) = self
             .world
             .get::<&WaylandSurface>(entity)
             .ok()
-            .map(|s| s.id.clone())
-        else {
-            return;
-        };
-        let Some(surface) = self
-            .toplevels
-            .iter()
-            .find(|t| t.wl_surface().id() == surface_id)
-            .map(|t| t.wl_surface().clone())
+            .map(|s| s.surface.clone())
         else {
             return;
         };
@@ -167,7 +160,7 @@ impl SpatilState {
         let Some((raised, _)) = self.modal_window() else {
             return false;
         };
-        if hit == Some(raised) {
+        if hit.map(|entity| self.window_entity(entity)) == Some(raised) {
             return false;
         }
         self.return_to_ambient(raised);
