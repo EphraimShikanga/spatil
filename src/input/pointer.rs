@@ -34,7 +34,10 @@ impl SpatilState {
             return;
         };
         let location = self.pointer_location;
-        let focus = raycast_surface(self, location).map(|(surface, hit)| (surface, location - hit));
+        let focus = self
+            .layer_surface_under(location)
+            .or_else(|| raycast_surface(self, location))
+            .map(|(surface, hit)| (surface, location - hit));
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.input_time();
         pointer.motion(self, focus, &MotionEvent { location, serial, time });
@@ -61,7 +64,8 @@ impl SpatilState {
         if button_state == ButtonState::Released && self.end_drag() {
             return;
         }
-        if button_state == ButtonState::Pressed {
+        let on_hud = self.layer_surface_under(self.pointer_location).is_some();
+        if button_state == ButtonState::Pressed && !on_hud {
             let hit = raycast_entity(self, self.pointer_location).map(|h| h.entity);
             if self.dismiss_on_backdrop(hit) {
                 return;
@@ -81,9 +85,23 @@ impl SpatilState {
         if button_state == ButtonState::Pressed
             && let Some(keyboard) = self.seat.get_keyboard()
             && !keyboard.is_grabbed()
+            && self.exclusive_layer().is_none()
         {
-            let focus = raycast_surface(self, self.pointer_location).map(|(surface, _)| surface);
-            keyboard.set_focus(self, focus, serial);
+            let hud = self
+                .layer_surface_under(self.pointer_location)
+                .map(|(surface, _)| surface);
+            match hud {
+                Some(surface) => {
+                    if self.layer_accepts_focus(&surface) {
+                        keyboard.set_focus(self, Some(surface), serial);
+                    }
+                }
+                None => {
+                    let focus =
+                        raycast_surface(self, self.pointer_location).map(|(surface, _)| surface);
+                    keyboard.set_focus(self, focus, serial);
+                }
+            }
         }
 
         pointer.button(

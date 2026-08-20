@@ -1,4 +1,5 @@
 pub mod client;
+pub mod layers;
 pub mod popups;
 pub mod presentation;
 
@@ -30,6 +31,7 @@ use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufState};
 use smithay::wayland::output::OutputManagerState;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel, Scale};
+use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shell::xdg::{ToplevelSurface, XdgShellState};
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::xdg_activation::XdgActivationState;
@@ -65,6 +67,7 @@ pub struct SpatilState {
     pub compositor_state: CompositorState,
     pub shm_state: ShmState,
     pub xdg_shell_state: XdgShellState,
+    pub layer_shell_state: WlrLayerShellState,
     pub xdg_activation_state: XdgActivationState,
     pub output_manager_state: OutputManagerState,
     pub dmabuf_state: DmabufState,
@@ -101,6 +104,7 @@ impl SpatilState {
         let compositor_state = CompositorState::new_v6::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&display_handle, "seat0");
         let xkb_config = XkbConfig {
@@ -217,6 +221,7 @@ impl SpatilState {
             compositor_state,
             shm_state,
             xdg_shell_state,
+            layer_shell_state,
             xdg_activation_state,
             output_manager_state,
             dmabuf_state,
@@ -262,6 +267,9 @@ impl SpatilState {
                 send(popup.wl_surface());
             }
         }
+        for surface in self.layer_surfaces() {
+            send(&surface);
+        }
     }
 
     pub fn reveal_pending(&mut self) {
@@ -300,6 +308,7 @@ impl SpatilState {
 
     pub fn tick_animations(&mut self, dt_ms: f32) {
         self.popups.cleanup();
+        self.update_hud_layout();
         let dt_ms = dt_ms.min(50.0);
         for id in animation::update(&mut self.world, dt_ms) {
             self.wgpu_state.remove_texture(&id);
@@ -453,6 +462,7 @@ impl SpatilState {
         };
         self.output.change_current_state(Some(mode), None, None, None);
         self.output.set_preferred(mode);
+        self.rearrange_layers();
 
         let old_mode = self.wgpu_state.scene_mode;
         self.wgpu_state

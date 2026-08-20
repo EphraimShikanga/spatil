@@ -1,6 +1,7 @@
 pub mod backdrop;
 pub mod dmabuf;
 pub mod grid;
+pub mod hud;
 pub mod particles;
 pub mod pipeline;
 pub mod scene_params;
@@ -26,6 +27,7 @@ use crate::scene::systems::update_world_matrices;
 
 use backdrop::{BackdropPipeline, BackdropUniform};
 use grid::{GridPipeline, GridUniform};
+use hud::{HudPipeline, HudQuad, hud_mvp};
 use particles::{ParticlePipeline, ParticleUniform};
 use pipeline::{Camera, OPENGL_TO_WGPU_MATRIX, QuadPipeline, QuadUniform};
 use scene_params::{AetherParams, InteractionParams, StrataParams};
@@ -119,6 +121,9 @@ pub struct WgpuState {
     pub shadow_pipeline: ShadowPipeline,
     pub shadow_map: ShadowMap,
     pub backdrop_pipeline: BackdropPipeline,
+    pub hud_pipeline: HudPipeline,
+    /// Layer-shell surfaces in screen pixels, back-to-front.
+    pub hud_layout: Vec<HudQuad>,
     pub camera: Camera,
     pub camera_controller: CameraController,
     pub scene_mode: SceneMode,
@@ -219,6 +224,7 @@ impl WgpuState {
         let grid_pipeline = GridPipeline::new(&device, format, &shadow_map);
         let particle_pipeline = ParticlePipeline::new(&device, format);
         let backdrop_pipeline = BackdropPipeline::new(&device, format);
+        let hud_pipeline = HudPipeline::new(&device, format, &quad_pipeline.bind_group_layout);
         let particle_positions = particles::generate_particles(
             aether.particle_count,
             aether.field[0],
@@ -256,6 +262,8 @@ impl WgpuState {
             shadow_pipeline,
             shadow_map,
             backdrop_pipeline,
+            hud_pipeline,
+            hud_layout: Vec::new(),
             camera,
             camera_controller: CameraController::default(),
             scene_mode,
@@ -566,6 +574,32 @@ impl WgpuState {
         draw_list.sort_by(back_to_front);
         modal_list.sort_by(back_to_front);
 
+        let (screen_w, screen_h) = (self.width.max(1) as f32, self.height.max(1) as f32);
+        let mut hud_list: Vec<usize> = Vec::new();
+        for entry in &self.hud_layout {
+            let Some(idx) = self.quads.iter().position(|(qid, _)| *qid == entry.id) else {
+                continue;
+            };
+            let quad = &self.quads[idx].1;
+            let mvp = hud_mvp(entry.rect, screen_w, screen_h);
+            self.queue.write_buffer(
+                &quad.uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[QuadUniform {
+                    mvp: mvp.into(),
+                    model: mvp.into(),
+                    uv_scale: quad.uv_scale,
+                    alpha: 1.0,
+                    border_width: 0.0,
+                    tint: [0.0; 4],
+                    border_color: [0.0; 4],
+                    surface_alpha: if quad.has_alpha { 1.0 } else { 0.0 },
+                    _pad: [0.0; 3],
+                }]),
+            );
+            hud_list.push(idx);
+        }
+
         // Runs even with no windows, so the map is cleared to 1.0 (unoccluded)
         // every frame rather than sampled stale by the grid.
         if draw_grid && self.strata.enable_shadows {
@@ -732,6 +766,20 @@ impl WgpuState {
                     wgpu::IndexFormat::Uint16,
                 );
                 for &(idx, _) in &modal_list {
+                    let quad = &self.quads[idx].1;
+                    render_pass.set_bind_group(0, &quad.bind_group, &[]);
+                    render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
+                }
+            }
+
+            if !hud_list.is_empty() {
+                render_pass.set_pipeline(&self.hud_pipeline.pipeline);
+                render_pass.set_vertex_buffer(0, self.quad_pipeline.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    self.quad_pipeline.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint16,
+                );
+                for &idx in &hud_list {
                     let quad = &self.quads[idx].1;
                     render_pass.set_bind_group(0, &quad.bind_group, &[]);
                     render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);

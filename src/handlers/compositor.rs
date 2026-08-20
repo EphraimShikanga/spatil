@@ -61,16 +61,22 @@ impl CompositorHandler for SpatilState {
             None => self.popup_render_root(surface),
         };
 
+        let layer_target = match (&target_toplevel, &popup_root) {
+            (None, None) => self.layer_commit_target(surface),
+            _ => None,
+        };
+
         let is_toplevel = target_toplevel
             .as_ref()
             .map(|t| t.wl_surface() == surface)
             .unwrap_or(false);
         tracing::trace!(surface_id = ?surface.id(), is_toplevel, "Received a buffer commit!");
 
-        let target_surface_id = match (&target_toplevel, &popup_root) {
-            (Some(toplevel), _) => toplevel.wl_surface().id(),
-            (None, Some(popup)) => popup.id(),
-            (None, None) => return,
+        let target_surface_id = match (&target_toplevel, &popup_root, &layer_target) {
+            (Some(toplevel), _, _) => toplevel.wl_surface().id(),
+            (None, Some(popup), _) => popup.id(),
+            (None, None, Some(layer)) => layer.clone(),
+            (None, None, None) => return,
         };
 
         let has_buffer = with_states(surface, |states| {
@@ -103,7 +109,9 @@ impl CompositorHandler for SpatilState {
         if let Some(popup) = &popup_root {
             let root = self.root_surface(popup);
             self.refresh_popup_offsets(&root);
-        } else if let Some(window_id) = self.mark_committed(&target_surface_id) {
+        } else if layer_target.is_none()
+            && let Some(window_id) = self.mark_committed(&target_surface_id)
+        {
             self.broadcast_event(&crate::ipc::SpatilEvent::new("window_committed", window_id));
         }
 
@@ -183,7 +191,11 @@ impl CompositorHandler for SpatilState {
                 // HACK: Ignore tiny subsurface commits (like Kitty's CSD window decorations)
                 // so they don't overwrite the main terminal texture in our single-quad
                 // renderer.
-                if popup_root.is_none() && !is_toplevel && (width < 100 || height < 100) {
+                if popup_root.is_none()
+                    && layer_target.is_none()
+                    && !is_toplevel
+                    && (width < 100 || height < 100)
+                {
                     tracing::info!(surface_id = ?surface.id(), width, height, "ignoring tiny subsurface SHM texture to prevent overwriting the main quad");
                 } else {
                     tracing::info!(surface_id = ?surface.id(), width, height, stride, "uploading SHM texture for toplevel surface");
