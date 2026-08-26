@@ -7,6 +7,8 @@ pub struct SpatilEvent {
     pub event: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 impl SpatilEvent {
@@ -14,6 +16,15 @@ impl SpatilEvent {
         Self {
             event: event.into(),
             window_id: Some(window_id),
+            data: None,
+        }
+    }
+
+    pub fn with_data(event: impl Into<String>, data: serde_json::Value) -> Self {
+        Self {
+            event: event.into(),
+            window_id: None,
+            data: Some(data),
         }
     }
 }

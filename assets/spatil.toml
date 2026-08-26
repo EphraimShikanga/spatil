@@ -162,6 +162,21 @@ backdrop_dim = 0.55           # how far the world darkens behind a presented win
 backdrop_dim_color = "#000000"
 present_fill = 0.8            # fraction of the screen a presented window covers
 
+# Familiar: the native orb that replaces a taskbar/status bar. It is the system
+# clock, and after `idle_ms` of stillness it slides into an ambient mode where a
+# dot revolves around its perimeter to track seconds. Set familiar_enabled = false
+# if you would rather run your own zwlr_layer_shell_v1 panel (waybar, QuickShell,
+# ags, ...) in its place -- the orb keeps out of any exclusive zone a panel claims,
+# so the two can also coexist.
+[shell]
+familiar_enabled = true
+familiar_corner = "bottom_right"  # top_left | top_right | bottom_left | bottom_right
+familiar_size = 56                # diameter in pixels
+familiar_margin = 20              # inset from the screen corner in pixels
+familiar_color = "#12161C"        # orb body
+familiar_accent = "#4A90E2"       # hands, rim and the revolving second dot
+idle_ms = 5000                    # stillness before the orb goes ambient
+
 # Autostart: commands run once when Spatil starts, via `sh -c`. The working
 # directory is this config dir, so a relative path like "hooks/auto_place.py"
 # resolves to ~/.config/spatil/hooks/auto_place.py (scripts must be executable).

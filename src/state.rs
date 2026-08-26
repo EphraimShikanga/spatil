@@ -14,6 +14,7 @@ use cgmath::Vector3;
 use crate::config::{Action, KeyCombo, SpatilConfig};
 use crate::input::drag::{Drag, Navigate};
 use crate::renderer::WgpuState;
+use crate::shell::orb::OrbRuntime;
 use crate::scene::WORLD_SCALE;
 use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete, Physics, Tween};
 use crate::scene::components::{Billboard, Placement, Popup, Transform, WaylandSurface};
@@ -89,6 +90,8 @@ pub struct SpatilState {
     pub drag: Option<Drag>,
     pub navigate: Option<Navigate>,
     pub pointer_moved: bool,
+    pub last_input: Instant,
+    pub orb: OrbRuntime,
     window_id_counter: u32,
 }
 
@@ -243,6 +246,8 @@ impl SpatilState {
             drag: None,
             navigate: None,
             pointer_moved: false,
+            last_input: Instant::now(),
+            orb: OrbRuntime::default(),
             window_id_counter: 1,
         }
     }
@@ -318,6 +323,7 @@ impl SpatilState {
         self.wgpu_state.camera_controller.tick(dt_ms, physics);
         self.wgpu_state.scene_transition.tick(dt_ms);
         self.tick_backdrop(dt_ms);
+        self.tick_orb(dt_ms);
         // Derived, not latched: a Presented window that is *closed* rather than
         // dismissed would otherwise leave the parallax frozen for good.
         self.wgpu_state.parallax_frozen =
@@ -466,7 +472,12 @@ impl SpatilState {
 
         let old_mode = self.wgpu_state.scene_mode;
         self.wgpu_state
-            .apply_scene_config(&config.scene_graph, &config.display, &config.input);
+            .apply_scene_config(
+                &config.scene_graph,
+                &config.display,
+                &config.input,
+                &config.shell,
+            );
         let new_mode = config.scene_graph.scene_mode();
         let mode_changed = old_mode != new_mode;
 

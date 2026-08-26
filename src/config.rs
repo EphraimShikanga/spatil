@@ -26,8 +26,35 @@ pub struct SpatilConfig {
     pub scene_graph: SceneGraph,
     pub animation: Animation,
     pub input: Input,
+    pub shell: Shell,
     pub autostart: Autostart,
     pub keybindings: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Shell {
+    pub familiar_enabled: bool,
+    pub familiar_corner: String,
+    pub familiar_size: f32,
+    pub familiar_margin: f32,
+    pub familiar_color: String,
+    pub familiar_accent: String,
+    pub idle_ms: u64,
+}
+
+impl Default for Shell {
+    fn default() -> Self {
+        Self {
+            familiar_enabled: true,
+            familiar_corner: "bottom_right".to_string(),
+            familiar_size: 56.0,
+            familiar_margin: 20.0,
+            familiar_color: "#12161C".to_string(),
+            familiar_accent: "#4A90E2".to_string(),
+            idle_ms: 5000,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -352,6 +379,7 @@ impl Default for SpatilConfig {
             scene_graph: SceneGraph::default(),
             animation: Animation::default(),
             input: Input::default(),
+            shell: Shell::default(),
             autostart: Autostart::default(),
             keybindings: default_keybindings(),
         }

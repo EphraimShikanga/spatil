@@ -1,5 +1,3 @@
-//! Screen-space HUD pass: layer-shell surfaces drawn over the resolved 3D scene.
-
 use cgmath::Matrix4;
 use smithay::reexports::wayland_server::backend::ObjectId;
 
@@ -7,12 +5,9 @@ use super::pipeline::Vertex;
 
 pub struct HudQuad {
     pub id: ObjectId,
-    /// `[x, y, width, height]`, top-left origin, output pixels.
     pub rect: [f32; 4],
 }
 
-/// Pixel rect straight to clip space. Screen Y grows down while quad-local +Y is up,
-/// hence the flipped Y term.
 #[rustfmt::skip]
 pub fn hud_mvp(rect: [f32; 4], screen_w: f32, screen_h: f32) -> Matrix4<f32> {
     let [x, y, w, h] = rect;
@@ -92,7 +87,6 @@ mod tests {
     #[test]
     fn a_full_screen_rect_fills_clip_space() {
         let mvp = hud_mvp([0.0, 0.0, 1920.0, 1080.0], 1920.0, 1080.0);
-        // Quad-local top-left (-0.5, +0.5) is clip (-1, +1).
         let (x, y) = project(mvp, [-0.5, 0.5]);
         assert!((x + 1.0).abs() < 1e-5 && (y - 1.0).abs() < 1e-5, "{x} {y}");
         let (x, y) = project(mvp, [0.5, -0.5]);
@@ -101,7 +95,6 @@ mod tests {
 
     #[test]
     fn a_top_anchored_bar_lands_at_the_top_of_the_screen() {
-        // A 1920x40 bar at y=0: its bottom edge sits 40px down, not 40px up.
         let mvp = hud_mvp([0.0, 0.0, 1920.0, 40.0], 1920.0, 1080.0);
         let (_, top) = project(mvp, [0.0, 0.5]);
         let (_, bottom) = project(mvp, [0.0, -0.5]);
@@ -112,7 +105,6 @@ mod tests {
 
     #[test]
     fn a_corner_rect_stays_in_its_corner() {
-        // 48x48 orb-sized quad inset 16px from the bottom-right.
         let (sw, sh) = (800.0, 600.0);
         let mvp = hud_mvp([sw - 64.0, sh - 64.0, 48.0, 48.0], sw, sh);
         let (right, bottom) = project(mvp, [0.5, -0.5]);
@@ -123,7 +115,6 @@ mod tests {
     #[test]
     fn the_projection_is_pure_translation_and_scale() {
         let mvp = hud_mvp([100.0, 50.0, 200.0, 80.0], 1280.0, 720.0);
-        // No rotation or shear: the off-diagonal terms of the 2x2 block are zero.
         assert_eq!(mvp.x.y, 0.0);
         assert_eq!(mvp.y.x, 0.0);
         assert!(mvp.determinant().abs() < 1e-9, "z column is intentionally flat");

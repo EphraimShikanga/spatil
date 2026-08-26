@@ -15,8 +15,6 @@ const HIT_ORDER: [WlrLayer; 2] = [WlrLayer::Overlay, WlrLayer::Top];
 const DRAW_ORDER: [WlrLayer; 2] = [WlrLayer::Top, WlrLayer::Overlay];
 
 impl SpatilState {
-    /// The texture key a commit belongs to, if `surface` is a layer surface or one of
-    /// its subsurfaces.
     pub fn layer_commit_target(&mut self, surface: &WlSurface) -> Option<ObjectId> {
         let layer_surface = {
             let mut map = layer_map_for_output(&self.output);
@@ -36,8 +34,6 @@ impl SpatilState {
                 .get::<LayerSurfaceData>()
                 .is_some_and(|data| data.lock().unwrap().initial_configure_sent)
         });
-        // `arrange` deliberately never sends the initial configure: the protocol
-        // requires it in response to the first commit.
         if !configured {
             layer_surface.send_configure();
             self.refresh_layer_focus();
@@ -46,8 +42,6 @@ impl SpatilState {
         Some(root.id())
     }
 
-    /// Resolves mapped layer surfaces and their popups into screen-pixel HUD quads,
-    /// back-to-front. Run once per frame before rendering.
     pub fn update_hud_layout(&mut self) {
         let mut layout: Vec<HudQuad> = Vec::new();
         {
@@ -85,7 +79,6 @@ impl SpatilState {
         Some([origin.0, origin.1, quad.width as f32, quad.height as f32])
     }
 
-    /// The HUD surface under the cursor, and the point in its own logical pixels.
     pub fn layer_surface_under(
         &self,
         point: Point<f64, Logical>,
@@ -112,7 +105,6 @@ impl SpatilState {
             .is_some_and(|layer| layer.can_receive_keyboard_focus())
     }
 
-    /// The topmost surface demanding `Exclusive` keyboard interactivity, if any.
     pub fn exclusive_layer(&self) -> Option<WlSurface> {
         let map = layer_map_for_output(&self.output);
         for layer in HIT_ORDER {
@@ -126,8 +118,6 @@ impl SpatilState {
         None
     }
 
-    /// Hands the keyboard to an exclusive layer surface, or recovers focus when the
-    /// surface holding it has died.
     pub fn refresh_layer_focus(&mut self) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
@@ -149,7 +139,6 @@ impl SpatilState {
         keyboard.set_focus(self, fallback, serial);
     }
 
-    /// Must run before the root is unmapped, while its popup tree is still reachable.
     pub fn despawn_layer_popups(&mut self, root: &WlSurface) {
         let doomed: Vec<ObjectId> = PopupManager::popups_for_surface(root)
             .map(|(popup, _)| popup.wl_surface().id())
@@ -159,7 +148,6 @@ impl SpatilState {
         }
     }
 
-    /// Every mapped layer surface and layer popup, for the frame-callback heartbeat.
     pub fn layer_surfaces(&self) -> Vec<WlSurface> {
         let map = layer_map_for_output(&self.output);
         let mut surfaces = Vec::new();

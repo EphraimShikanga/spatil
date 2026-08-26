@@ -38,6 +38,7 @@ impl SpatilState {
     }
 
     pub fn dispatch_key(&mut self, keycode: Keycode, key_state: KeyState) {
+        self.note_input();
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };

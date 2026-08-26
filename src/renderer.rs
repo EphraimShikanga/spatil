@@ -2,6 +2,7 @@ pub mod backdrop;
 pub mod dmabuf;
 pub mod grid;
 pub mod hud;
+pub mod orb;
 pub mod particles;
 pub mod pipeline;
 pub mod scene_params;
@@ -18,7 +19,7 @@ use winit::window::Window;
 use smithay::backend::allocator::Modifier;
 use smithay::reexports::wayland_server::backend::ObjectId;
 
-use crate::config::{Display, Input, SceneGraph, SpatilConfig};
+use crate::config::{Display, Input, SceneGraph, Shell, SpatilConfig};
 use crate::scene::animation::SceneTransition;
 use crate::scene::camera_controller::CameraController;
 use crate::scene::components::{Popup, Presentation, Transform, WaylandSurface, WindowState};
@@ -28,6 +29,7 @@ use crate::scene::systems::update_world_matrices;
 use backdrop::{BackdropPipeline, BackdropUniform};
 use grid::{GridPipeline, GridUniform};
 use hud::{HudPipeline, HudQuad, hud_mvp};
+use orb::{OrbFrame, OrbParams, OrbPipeline, OrbUniform};
 use particles::{ParticlePipeline, ParticleUniform};
 use pipeline::{Camera, OPENGL_TO_WGPU_MATRIX, QuadPipeline, QuadUniform};
 use scene_params::{AetherParams, InteractionParams, StrataParams};
@@ -124,6 +126,9 @@ pub struct WgpuState {
     pub hud_pipeline: HudPipeline,
     /// Layer-shell surfaces in screen pixels, back-to-front.
     pub hud_layout: Vec<HudQuad>,
+    pub orb_pipeline: OrbPipeline,
+    pub orb: OrbParams,
+    pub orb_frame: Option<OrbFrame>,
     pub camera: Camera,
     pub camera_controller: CameraController,
     pub scene_mode: SceneMode,
@@ -225,6 +230,7 @@ impl WgpuState {
         let particle_pipeline = ParticlePipeline::new(&device, format);
         let backdrop_pipeline = BackdropPipeline::new(&device, format);
         let hud_pipeline = HudPipeline::new(&device, format, &quad_pipeline.bind_group_layout);
+        let orb_pipeline = OrbPipeline::new(&device, format);
         let particle_positions = particles::generate_particles(
             aether.particle_count,
             aether.field[0],
@@ -264,6 +270,9 @@ impl WgpuState {
             backdrop_pipeline,
             hud_pipeline,
             hud_layout: Vec::new(),
+            orb_pipeline,
+            orb: OrbParams::from_config(&config.shell),
+            orb_frame: None,
             camera,
             camera_controller: CameraController::default(),
             scene_mode,
@@ -282,10 +291,17 @@ impl WgpuState {
         }
     }
 
-    pub fn apply_scene_config(&mut self, scene: &SceneGraph, display: &Display, input: &Input) {
+    pub fn apply_scene_config(
+        &mut self,
+        scene: &SceneGraph,
+        display: &Display,
+        input: &Input,
+        shell: &Shell,
+    ) {
         self.scene_mode = scene.scene_mode();
         self.strata = StrataParams::from_config(&scene.strata, display);
         self.interaction = InteractionParams::from_config(input);
+        self.orb = OrbParams::from_config(shell);
 
         // Regenerate the point cloud only when its shape changed, so unrelated
         // edits don't reshuffle the stars.
@@ -600,6 +616,23 @@ impl WgpuState {
             hud_list.push(idx);
         }
 
+        if let Some(frame) = &self.orb_frame {
+            self.queue.write_buffer(
+                &self.orb_pipeline.uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[OrbUniform {
+                    rect: frame.rect,
+                    screen: [screen_w, screen_h, 0.0, 0.0],
+                    body_color: self.orb.body_color,
+                    accent_color: self.orb.accent_color,
+                    seconds_of_day: frame.seconds_of_day,
+                    open: frame.open,
+                    hover: frame.hover,
+                    ambient: frame.ambient,
+                }]),
+            );
+        }
+
         // Runs even with no windows, so the map is cleared to 1.0 (unoccluded)
         // every frame rather than sampled stale by the grid.
         if draw_grid && self.strata.enable_shadows {
@@ -785,6 +818,12 @@ impl WgpuState {
                     render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
                 }
             }
+
+            if self.orb_frame.is_some() {
+                render_pass.set_pipeline(&self.orb_pipeline.pipeline);
+                render_pass.set_bind_group(0, &self.orb_pipeline.uniform_bind_group, &[]);
+                render_pass.draw(0..6, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -813,5 +852,6 @@ mod shader_tests {
         validate("grid.wgsl", include_str!("shaders/grid.wgsl"));
         validate("particles.wgsl", include_str!("shaders/particles.wgsl"));
         validate("shadow.wgsl", include_str!("shaders/shadow.wgsl"));
+        validate("orb.wgsl", include_str!("shaders/orb.wgsl"));
     }
 }

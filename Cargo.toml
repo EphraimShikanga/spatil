@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Ephraim Shikanga <ephraimshikanga@gmail.com>"]
-description = "A Wayland compositor for tiling and floating window management"
+description = "3D spatial Wayland compositor"
 repository = "https://github.com/EphraimShikanga/spatil"
 
 [dependencies]

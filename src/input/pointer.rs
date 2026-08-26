@@ -14,8 +14,11 @@ impl SpatilState {
     }
 
     pub fn dispatch_pointer_motion_absolute(&mut self, x: f64, y: f64) {
+        self.note_input();
         self.pointer_location = (x, y).into();
         self.pointer_moved = true;
+        let on_orb = self.orb_contains(self.pointer_location);
+        self.set_orb_hover(on_orb);
         // NDC cursor for the Aether parallax camera (y up), in output pixel space.
         let (w, h) = (
             self.wgpu_state.width.max(1) as f64,
@@ -34,10 +37,13 @@ impl SpatilState {
             return;
         };
         let location = self.pointer_location;
-        let focus = self
-            .layer_surface_under(location)
-            .or_else(|| raycast_surface(self, location))
-            .map(|(surface, hit)| (surface, location - hit));
+        let focus = if on_orb {
+            None
+        } else {
+            self.layer_surface_under(location)
+                .or_else(|| raycast_surface(self, location))
+                .map(|(surface, hit)| (surface, location - hit))
+        };
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.input_time();
         pointer.motion(self, focus, &MotionEvent { location, serial, time });
@@ -61,7 +67,14 @@ impl SpatilState {
     }
 
     pub fn dispatch_pointer_button(&mut self, button_code: u32, button_state: ButtonState) {
+        self.note_input();
         if button_state == ButtonState::Released && self.end_drag() {
+            return;
+        }
+        if button_state == ButtonState::Pressed
+            && button_code == BTN_LEFT
+            && self.orb_press(self.pointer_location)
+        {
             return;
         }
         let on_hud = self.layer_surface_under(self.pointer_location).is_some();
@@ -144,6 +157,7 @@ impl SpatilState {
     }
 
     pub fn dispatch_pointer_axis(&mut self, frame: AxisFrame) {
+        self.note_input();
         // Vertical scroll under the world modifier is ours; horizontal and
         // unmodified scroll is the client's.
         if let Some(steps) = wheel_steps(&frame)

@@ -32,6 +32,10 @@ impl SpatilState {
                     .look_at(Vector3::new(x, y, z));
             }
             "reset_view" => self.wgpu_state.camera_controller.reset(),
+            "orb_state" => {
+                let event = super::protocol::SpatilEvent::with_data("orb_state", self.orb_report());
+                self.broadcast_event(&event);
+            }
             "show" | "map" => match cmd.window_id {
                 Some(window_id) if self.reveal_window(window_id) => {}
                 Some(window_id) => tracing::warn!(window_id, "show for unknown window_id"),

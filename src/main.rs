@@ -5,6 +5,7 @@ mod input;
 mod ipc;
 mod renderer;
 mod scene;
+mod shell;
 mod state;
 
 use config::SpatilConfig;
