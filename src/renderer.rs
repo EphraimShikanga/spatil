@@ -1,4 +1,5 @@
 pub mod backdrop;
+pub mod cursor;
 pub mod dmabuf;
 pub mod grid;
 pub mod hud;
@@ -28,6 +29,7 @@ use crate::scene::systems::update_world_matrices;
 
 use backdrop::{BackdropPipeline, BackdropUniform};
 use grid::{GridPipeline, GridUniform};
+use cursor::{CursorFrame, CursorPipeline, CursorUniform};
 use hud::{HudPipeline, HudQuad, hud_mvp};
 use orb::{OrbFrame, OrbParams, OrbPipeline, OrbUniform};
 use particles::{ParticlePipeline, ParticleUniform};
@@ -129,6 +131,8 @@ pub struct WgpuState {
     pub orb_pipeline: OrbPipeline,
     pub orb: OrbParams,
     pub orb_frame: Option<OrbFrame>,
+    pub cursor_pipeline: CursorPipeline,
+    pub cursor_frame: Option<CursorFrame>,
     pub camera: Camera,
     pub camera_controller: CameraController,
     pub scene_mode: SceneMode,
@@ -231,6 +235,7 @@ impl WgpuState {
         let backdrop_pipeline = BackdropPipeline::new(&device, format);
         let hud_pipeline = HudPipeline::new(&device, format, &quad_pipeline.bind_group_layout);
         let orb_pipeline = OrbPipeline::new(&device, format);
+        let cursor_pipeline = CursorPipeline::new(&device, format);
         let particle_positions = particles::generate_particles(
             aether.particle_count,
             aether.field[0],
@@ -273,6 +278,8 @@ impl WgpuState {
             orb_pipeline,
             orb: OrbParams::from_config(&config.shell),
             orb_frame: None,
+            cursor_pipeline,
+            cursor_frame: None,
             camera,
             camera_controller: CameraController::default(),
             scene_mode,
@@ -629,6 +636,25 @@ impl WgpuState {
                     open: frame.open,
                     hover: frame.hover,
                     ambient: frame.ambient,
+                    hand: frame.hand,
+                    _pad: [0.0; 3],
+                }]),
+            );
+        }
+
+        if let Some(frame) = &self.cursor_frame {
+            self.queue.write_buffer(
+                &self.cursor_pipeline.uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[CursorUniform {
+                    rect: frame.rect,
+                    screen: [screen_w, screen_h, 0.0, 0.0],
+                    fill: [1.0, 1.0, 1.0, 1.0],
+                    outline: [0.0, 0.0, 0.0, 1.0],
+                    alpha: frame.alpha,
+                    angle: frame.angle,
+                    shrink: frame.shrink,
+                    _pad: 0.0,
                 }]),
             );
         }
@@ -824,6 +850,12 @@ impl WgpuState {
                 render_pass.set_bind_group(0, &self.orb_pipeline.uniform_bind_group, &[]);
                 render_pass.draw(0..6, 0..1);
             }
+
+            if self.cursor_frame.is_some() {
+                render_pass.set_pipeline(&self.cursor_pipeline.pipeline);
+                render_pass.set_bind_group(0, &self.cursor_pipeline.uniform_bind_group, &[]);
+                render_pass.draw(0..6, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -853,5 +885,6 @@ mod shader_tests {
         validate("particles.wgsl", include_str!("shaders/particles.wgsl"));
         validate("shadow.wgsl", include_str!("shaders/shadow.wgsl"));
         validate("orb.wgsl", include_str!("shaders/orb.wgsl"));
+        validate("cursor.wgsl", include_str!("shaders/cursor.wgsl"));
     }
 }

@@ -3,7 +3,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use smithay::desktop::layer_map_for_output;
 use smithay::utils::{Logical, Point, Rectangle};
 
-use crate::renderer::orb::{Corner, OrbFrame};
+use crate::renderer::cursor::CursorFrame;
+use crate::renderer::orb::{Corner, OrbFrame, SECOND_HAND};
 use crate::scene::animation::spring_step;
 use crate::state::SpatilState;
 
@@ -20,6 +21,19 @@ impl Eased {
         self.value = value.clamp(-0.2, 1.2);
         self.velocity = velocity;
     }
+}
+
+const TAU: f32 = std::f32::consts::TAU;
+const CURSOR_SIZE: f32 = 13.0;
+const HANDOFF: f32 = 0.72;
+
+fn ease(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn ramp(v: f32, lo: f32, hi: f32) -> f32 {
+    ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
 }
 
 #[derive(Default)]
@@ -77,6 +91,52 @@ fn corner_rect(
     Some(Rectangle::new(loc.into(), (size, size).into()))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Flight {
+    pub cursor_pos: (f32, f32),
+    pub arrow_alpha: f32,
+    pub arrow_angle: f32,
+    pub arrow_shrink: f32,
+    pub hand: f32,
+    pub hide_real_cursor: bool,
+}
+
+fn flight_pose(
+    ambient: f32,
+    pointer: (f32, f32),
+    orb_centre: (f32, f32),
+    orb_radius: f32,
+    second_angle: f32,
+) -> Flight {
+    let a = ambient.clamp(0.0, 1.0);
+    let travel = ease(ramp(a, 0.0, HANDOFF));
+    let hand = ease(ramp(a, HANDOFF, 1.0));
+
+    let reach = SECOND_HAND * orb_radius;
+    let tip = (
+        orb_centre.0 + second_angle.sin() * reach,
+        orb_centre.1 - second_angle.cos() * reach,
+    );
+
+    let shortest = if second_angle > std::f32::consts::PI {
+        second_angle - TAU
+    } else {
+        second_angle
+    };
+
+    Flight {
+        cursor_pos: (
+            pointer.0 + (tip.0 - pointer.0) * travel,
+            pointer.1 + (tip.1 - pointer.1) * travel,
+        ),
+        arrow_alpha: 1.0 - hand,
+        arrow_angle: shortest * travel,
+        arrow_shrink: 1.0 - 0.45 * hand,
+        hand,
+        hide_real_cursor: a > 0.001,
+    }
+}
+
 impl SpatilState {
     pub fn note_input(&mut self) {
         self.last_input = Instant::now();
@@ -85,7 +145,7 @@ impl SpatilState {
     pub fn tick_orb(&mut self, dt_ms: f32) {
         let params = &self.wgpu_state.orb;
         if !params.enabled {
-            self.wgpu_state.orb_frame = None;
+            self.clear_orb();
             return;
         }
 
@@ -103,9 +163,24 @@ impl SpatilState {
         self.orb.ambient.tick(ambient_target, stiffness, damping, dt);
 
         let Some(rect) = self.orb_rect() else {
-            self.wgpu_state.orb_frame = None;
+            self.clear_orb();
             return;
         };
+
+        let secs = seconds_of_day();
+        let ambient = self.orb.ambient.value.clamp(0.0, 1.0);
+        let radius = rect.size.w as f32 * 0.5;
+        let flight = flight_pose(
+            ambient,
+            (
+                self.pointer_location.x as f32,
+                self.pointer_location.y as f32,
+            ),
+            (rect.loc.x as f32 + radius, rect.loc.y as f32 + radius),
+            radius,
+            TAU * (secs / 60.0).fract(),
+        );
+
         self.wgpu_state.orb_frame = Some(OrbFrame {
             rect: [
                 rect.loc.x as f32,
@@ -113,11 +188,33 @@ impl SpatilState {
                 rect.size.w as f32,
                 rect.size.h as f32,
             ],
-            seconds_of_day: seconds_of_day(),
+            seconds_of_day: secs,
             open: self.orb.open.value.clamp(0.0, 1.0),
             hover: self.orb.hover.value.clamp(0.0, 1.0),
-            ambient: self.orb.ambient.value.clamp(0.0, 1.0),
+            ambient,
+            hand: flight.hand,
         });
+
+        self.cursor_hidden = flight.hide_real_cursor;
+        self.wgpu_state.cursor_frame = (flight.arrow_alpha > 0.002
+            && flight.hide_real_cursor)
+            .then(|| CursorFrame {
+                rect: [
+                    flight.cursor_pos.0 - CURSOR_SIZE,
+                    flight.cursor_pos.1 - CURSOR_SIZE,
+                    CURSOR_SIZE * 2.0,
+                    CURSOR_SIZE * 2.0,
+                ],
+                alpha: flight.arrow_alpha,
+                angle: flight.arrow_angle,
+                shrink: flight.arrow_shrink,
+            });
+    }
+
+    fn clear_orb(&mut self) {
+        self.wgpu_state.orb_frame = None;
+        self.wgpu_state.cursor_frame = None;
+        self.cursor_hidden = false;
     }
 
     pub fn orb_rect(&self) -> Option<Rectangle<i32, Logical>> {
@@ -158,6 +255,9 @@ impl SpatilState {
             "hover": self.orb.hover.value,
             "open": self.orb.open.value,
             "ambient": self.orb.ambient.value,
+            "hand": self.wgpu_state.orb_frame.as_ref().map_or(0.0, |f| f.hand),
+            "cursor_hidden": self.cursor_hidden,
+            "cursor_flying": self.wgpu_state.cursor_frame.is_some(),
             "seconds_of_day": seconds_of_day(),
         })
     }
@@ -218,6 +318,61 @@ mod tests {
         assert_eq!(Corner::parse("Bottom-Right"), Some(Corner::BottomRight));
         assert_eq!(Corner::parse(" TOPLEFT "), Some(Corner::TopLeft));
         assert_eq!(Corner::parse("middle"), None);
+    }
+
+    fn pose(ambient: f32) -> Flight {
+        flight_pose(
+            ambient,
+            (100.0, 100.0),
+            (1000.0, 900.0),
+            28.0,
+            std::f32::consts::FRAC_PI_2,
+        )
+    }
+
+    #[test]
+    fn an_active_session_leaves_the_real_cursor_alone() {
+        let f = pose(0.0);
+        assert!(!f.hide_real_cursor, "the real cursor must stay visible when active");
+        assert_eq!(f.hand, 0.0, "no second hand while the user is active");
+        assert_eq!(f.cursor_pos, (100.0, 100.0), "the drawn arrow starts at the pointer");
+    }
+
+    #[test]
+    fn going_idle_flies_the_cursor_to_the_second_hand_tip() {
+        let start = pose(0.02);
+        assert!(start.hide_real_cursor, "the real cursor hides as soon as the flight starts");
+        let d0 = (start.cursor_pos.0 - 100.0).hypot(start.cursor_pos.1 - 100.0);
+        assert!(d0 < 20.0, "the flight begins at the pointer, moved {d0}");
+
+        let mid = pose(0.4);
+        assert!(
+            mid.cursor_pos.0 > start.cursor_pos.0 && mid.cursor_pos.1 > start.cursor_pos.1,
+            "the arrow travels toward the orb",
+        );
+
+        let end = pose(1.0);
+        let tip = (1000.0 + 0.86 * 28.0, 900.0);
+        assert!((end.cursor_pos.0 - tip.0).abs() < 0.01, "{:?}", end.cursor_pos);
+        assert!((end.cursor_pos.1 - tip.1).abs() < 0.01, "{:?}", end.cursor_pos);
+        assert!(end.hand > 0.99, "hand {}", end.hand);
+        assert!(end.arrow_alpha < 0.01, "the arrow must be gone once the hand is formed");
+    }
+
+    #[test]
+    fn the_arrow_and_the_hand_never_both_show_fully() {
+        for i in 0..=20 {
+            let f = pose(i as f32 / 20.0);
+            let total = f.arrow_alpha + f.hand;
+            assert!((total - 1.0).abs() < 0.001, "at {i}: arrow+hand = {total}");
+        }
+    }
+
+    #[test]
+    fn the_arrow_turns_the_short_way_round() {
+        let late = flight_pose(1.0, (0.0, 0.0), (500.0, 500.0), 28.0, TAU * 55.0 / 60.0);
+        assert!(late.arrow_angle < 0.0, "angle {}", late.arrow_angle);
+        assert!(late.arrow_angle.abs() < std::f32::consts::PI, "angle {}", late.arrow_angle);
     }
 
     #[test]

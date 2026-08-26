@@ -19,6 +19,7 @@ struct SpatilApp {
     surface: Option<wgpu::Surface<'static>>,
     surface_config: Option<wgpu::SurfaceConfiguration>,
     needs_reconfigure: bool,
+    cursor_hidden: bool,
     display_handle: DisplayHandle,
     calloop: CalloopEventLoop<'static, SpatilState>,
     config: SpatilConfig,
@@ -96,6 +97,13 @@ impl ApplicationHandler for SpatilApp {
                 let dt_ms = state.cpu_dt_ms();
                 state.tick_animations(dt_ms);
 
+                if state.cursor_hidden != self.cursor_hidden
+                    && let Some(window) = &self.window
+                {
+                    window.set_cursor_visible(!state.cursor_hidden);
+                    self.cursor_hidden = state.cursor_hidden;
+                }
+
                 let surface = self.surface.as_ref().unwrap();
                 let surface_config = self.surface_config.as_mut().unwrap();
 
@@ -164,6 +172,7 @@ pub fn run(config: SpatilConfig) {
         surface: None,
         surface_config: None,
         needs_reconfigure: false,
+        cursor_hidden: false,
         display_handle,
         calloop,
         config,

@@ -92,6 +92,7 @@ pub struct SpatilState {
     pub pointer_moved: bool,
     pub last_input: Instant,
     pub orb: OrbRuntime,
+    pub cursor_hidden: bool,
     window_id_counter: u32,
 }
 
@@ -248,6 +249,7 @@ impl SpatilState {
             pointer_moved: false,
             last_input: Instant::now(),
             orb: OrbRuntime::default(),
+            cursor_hidden: false,
             window_id_counter: 1,
         }
     }

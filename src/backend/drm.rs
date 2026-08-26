@@ -57,6 +57,7 @@ pub struct DrmOutput {
     active: bool,
     last_vblank: Option<Duration>,
     cursor: Option<HwCursor>,
+    cursor_hidden: bool,
 }
 
 pub fn run(config: SpatilConfig) {
@@ -190,6 +191,7 @@ fn try_run(config: SpatilConfig) -> Result<(), String> {
         active: true,
         last_vblank: None,
         cursor,
+        cursor_hidden: false,
     });
 
     let mut libinput = Libinput::new_with_udev(LibinputSessionInterface::from(session.clone()));
@@ -294,6 +296,7 @@ impl SpatilState {
 
         self.reveal_pending();
         self.tick_animations(dt_ms);
+        self.sync_hw_cursor_visibility();
 
         // Clone the view (Arc) + copy the fb handle so no borrow of self.drm is held
         // across the mutable render below.
@@ -424,12 +427,32 @@ impl SpatilState {
             let _ = drm.device.move_cursor(drm.crtc, (x, y));
         }
     }
+
+    #[allow(deprecated)]
+    pub fn sync_hw_cursor_visibility(&mut self) {
+        let hidden = self.cursor_hidden;
+        let Some(drm) = &mut self.drm else {
+            return;
+        };
+        if drm.cursor_hidden == hidden {
+            return;
+        }
+        let Some(cursor) = &drm.cursor else {
+            return;
+        };
+        let armed = if hidden { None } else { Some(&cursor.buffer) };
+        match drm.device.set_cursor2(drm.crtc, armed, cursor.hotspot) {
+            Ok(()) => drm.cursor_hidden = hidden,
+            Err(err) => tracing::warn!("failed to toggle the hardware cursor: {err}"),
+        }
+    }
 }
 
 impl DrmOutput {
     #[allow(deprecated)]
     fn rearm_cursor(&self) {
         if let Some(cursor) = &self.cursor
+            && !self.cursor_hidden
             && let Err(err) = self
                 .device
                 .set_cursor2(self.crtc, Some(&cursor.buffer), cursor.hotspot)

@@ -7,6 +7,7 @@ struct OrbUniform {
     open: f32,
     hover: f32,
     ambient: f32,
+    hand: f32,
 };
 
 @group(0) @binding(0)
@@ -14,8 +15,7 @@ var<uniform> orb: OrbUniform;
 
 const PAD: f32 = 2.0;
 const TAU: f32 = 6.28318530718;
-const DOT_ORBIT: f32 = 1.22;
-const DOT_RADIUS: f32 = 0.105;
+const SECOND_HAND: f32 = 0.86;
 const OPEN_RING: f32 = 1.62;
 
 struct VertexOutput {
@@ -94,39 +94,39 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
 
     let body = 1.0 - smoothstep(body_r - aa, body_r + aa, d);
-    let body_a = orb.body_color.a * mix(0.94, 0.58, orb.ambient);
+    let body_a = orb.body_color.a * mix(0.94, 0.80, orb.ambient);
     color = over(color, vec4<f32>(orb.body_color.rgb, body * body_a));
 
     let rim = ring_mask(d, body_r, 0.035 + orb.hover * 0.02, aa);
-    let rim_a = mix(0.30, 0.85, orb.hover) * mix(1.0, 0.6, orb.ambient);
+    let rim_a = mix(0.30, 0.85, orb.hover) * mix(1.0, 0.7, orb.ambient);
     color = over(color, vec4<f32>(accent, rim * rim_a));
 
     let secs = orb.seconds_of_day;
     let minute = dial(TAU * fract(secs / 3600.0));
     let hour = dial(TAU * fract(secs / 43200.0));
-    let hand_a = mix(0.95, 0.22, orb.ambient);
 
     let hour_d = seg_dist(p, vec2<f32>(0.0, 0.0), hour * 0.42);
     let hour_m = 1.0 - smoothstep(0.038 - aa, 0.038 + aa, hour_d);
-    color = over(color, vec4<f32>(hands_rgb, hour_m * hand_a));
+    color = over(color, vec4<f32>(hands_rgb, hour_m * 0.95));
 
     let min_d = seg_dist(p, vec2<f32>(0.0, 0.0), minute * 0.64);
     let min_m = 1.0 - smoothstep(0.027 - aa, 0.027 + aa, min_d);
-    color = over(color, vec4<f32>(hands_rgb, min_m * hand_a));
+    color = over(color, vec4<f32>(hands_rgb, min_m * 0.95));
+
+    if (orb.hand > 0.001) {
+        let second = dial(TAU * fract(secs / 60.0));
+        let grown = SECOND_HAND * orb.hand;
+        let sec_d = seg_dist(p, second * -0.14 * orb.hand, second * grown);
+        let sec_m = 1.0 - smoothstep(0.018 - aa, 0.018 + aa, sec_d);
+        color = over(color, vec4<f32>(accent, sec_m * orb.hand));
+
+        let tip_d = length(p - second * grown);
+        let tip_m = 1.0 - smoothstep(0.05 - aa, 0.05 + aa, tip_d);
+        color = over(color, vec4<f32>(mix(accent, vec3<f32>(1.0), 0.35), tip_m * orb.hand));
+    }
 
     let hub = 1.0 - smoothstep(0.06 - aa, 0.06 + aa, d);
-    color = over(color, vec4<f32>(hands_rgb, hub * hand_a));
-
-    let track = ring_mask(d, DOT_ORBIT, 0.012, aa);
-    color = over(color, vec4<f32>(accent, track * mix(0.10, 0.34, orb.ambient)));
-
-    let dot_pos = dial(TAU * fract(secs / 60.0)) * DOT_ORBIT;
-    let dot_d = length(p - dot_pos);
-    let dot_a = mix(0.5, 1.0, orb.ambient);
-    let glow = (1.0 - smoothstep(DOT_RADIUS, DOT_RADIUS * 3.2, dot_d)) * 0.35 * dot_a;
-    color = over(color, vec4<f32>(accent, glow));
-    let dot_m = 1.0 - smoothstep(DOT_RADIUS - aa, DOT_RADIUS + aa, dot_d);
-    color = over(color, vec4<f32>(mix(accent, vec3<f32>(1.0), 0.35), dot_m * dot_a));
+    color = over(color, vec4<f32>(hands_rgb, hub * 0.95));
 
     if (orb.open > 0.001) {
         let r = mix(body_r, OPEN_RING, orb.open);

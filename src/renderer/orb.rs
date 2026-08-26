@@ -22,6 +22,8 @@ impl Corner {
     }
 }
 
+pub const SECOND_HAND: f32 = 0.86;
+
 pub struct OrbParams {
     pub enabled: bool,
     pub corner: Corner,
@@ -59,6 +61,7 @@ pub struct OrbFrame {
     pub open: f32,
     pub hover: f32,
     pub ambient: f32,
+    pub hand: f32,
 }
 
 #[repr(C)]
@@ -72,6 +75,8 @@ pub struct OrbUniform {
     pub open: f32,
     pub hover: f32,
     pub ambient: f32,
+    pub hand: f32,
+    pub _pad: [f32; 3],
 }
 
 pub struct OrbPipeline {
