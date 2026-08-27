@@ -28,6 +28,10 @@ fn main() {
     }
 
     config::bootstrap_config_dir();
+    if std::env::args().any(|a| a == "--network-probe") {
+        shell::network::probe();
+        return;
+    }
     if std::env::args().any(|a| a == "--tray-probe") {
         shell::tray::probe();
         return;

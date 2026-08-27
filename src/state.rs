@@ -15,7 +15,8 @@ use crate::config::{Action, KeyCombo, SessionState, SpatilConfig};
 use crate::input::drag::{Drag, Navigate};
 use crate::renderer::WgpuState;
 use crate::shell::orb::OrbRuntime;
-use crate::shell::module::ModuleId;
+use crate::shell::module::{ModuleId, ModuleState};
+use crate::shell::network::init_network;
 use crate::shell::tray::{Tray, init_tray};
 use crate::scene::WORLD_SCALE;
 use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete, Physics, Tween};
@@ -96,6 +97,7 @@ pub struct SpatilState {
     pub orb: OrbRuntime,
     pub tray: Tray,
     pub module_slots: Vec<(ModuleId, [f32; 4])>,
+    pub network: Option<ModuleState>,
     pub cursor_hidden: bool,
     window_id_counter: u32,
 }
@@ -255,12 +257,14 @@ impl SpatilState {
             orb: OrbRuntime::default(),
             tray: Tray::default(),
             module_slots: Vec::new(),
+            network: None,
             cursor_hidden: false,
             window_id_counter: 1,
         };
         state.restore_orb_corner(&SessionState::load());
         let tray_requests = init_tray(&state.loop_handle);
         state.tray.attach(tray_requests);
+        init_network(&state.loop_handle);
         state
     }
 

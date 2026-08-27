@@ -1,5 +1,5 @@
 mod bus;
-mod icon;
+pub mod icon;
 
 use std::sync::mpsc::{Sender as StdSender, channel};
 
@@ -307,18 +307,19 @@ pub fn init_tray(loop_handle: &LoopHandle<'static, SpatilState>) -> Option<StdSe
 
 impl SpatilState {
     pub fn shell_modules(&self) -> Vec<ModuleState> {
-        let mut modules: Vec<ModuleState> = self
-            .tray
+        let mut modules: Vec<ModuleState> = self.network.iter().cloned().collect();
+        modules.extend(
+            self.tray
             .visible_items()
             .map(|item| {
                 let mut module = ModuleState::new(ModuleId::Tray(item.key.clone()));
-                module.icon = item.pixmap.clone();
+                module.icon = item.pixmap.clone().map(std::sync::Arc::new);
                 module.label = item.title.clone();
                 module.tooltip = item.title.clone();
                 module.urgent = item.status == TrayStatus::NeedsAttention;
                 module
-            })
-            .collect();
+            }),
+        );
         module::order(&mut modules);
         modules
     }

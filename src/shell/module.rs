@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::tray::TrayPixmap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,7 +49,7 @@ pub enum ModuleAction {
 #[derive(Debug, Clone)]
 pub struct ModuleState {
     pub id: ModuleId,
-    pub icon: Option<TrayPixmap>,
+    pub icon: Option<Arc<TrayPixmap>>,
     pub level: Option<f32>,
     pub active: bool,
     pub urgent: bool,
@@ -146,7 +148,7 @@ mod tests {
     fn a_module_without_an_icon_is_not_drawable() {
         let mut module = m(ModuleId::Network);
         assert!(!module.drawable());
-        module.icon = Some(TrayPixmap { width: 1, height: 1, bgra: vec![0; 4] });
+        module.icon = Some(Arc::new(TrayPixmap { width: 1, height: 1, bgra: vec![0; 4] }));
         assert!(module.drawable());
     }
 }

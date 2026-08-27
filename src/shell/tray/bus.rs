@@ -16,7 +16,6 @@ pub const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const ITEM_PATH: &str = "/StatusNotifierItem";
 const PROTOCOL_VERSION: i32 = 0;
 const MAX_ICON_EDGE: i32 = 128;
-const SYMBOLIC_TINT: [u8; 3] = [0xDC, 0xE3, 0xEC];
 
 #[proxy(interface = "org.kde.StatusNotifierItem", assume_defaults = false)]
 trait Item {
@@ -379,7 +378,7 @@ pub async fn read_item(
             super::icon::resolve(&icon_name, theme_path.as_deref()).and_then(|found| {
                 let mut decoded = super::icon::decode(&found)?;
                 if super::icon::is_symbolic(&found) {
-                    super::icon::tint(&mut decoded, SYMBOLIC_TINT);
+                    super::icon::tint(&mut decoded, crate::shell::SYMBOLIC_TINT);
                 }
                 Some(decoded)
             })
