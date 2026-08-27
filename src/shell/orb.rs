@@ -3,6 +3,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use smithay::desktop::layer_map_for_output;
 use smithay::utils::{Logical, Point, Rectangle};
 
+use crate::config::SessionState;
 use crate::renderer::cursor::CursorFrame;
 use crate::renderer::orb::{Corner, OrbFrame, SECOND_HAND};
 use crate::scene::animation::spring_step;
@@ -26,6 +27,8 @@ impl Eased {
 const TAU: f32 = std::f32::consts::TAU;
 const CURSOR_SIZE: f32 = 13.0;
 const HANDOFF: f32 = 0.72;
+const TAP_SLOP: f64 = 6.0;
+const SETTLED: f32 = 0.5;
 
 fn ease(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
@@ -36,6 +39,12 @@ fn ramp(v: f32, lo: f32, hi: f32) -> f32 {
     ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
 }
 
+struct OrbDrag {
+    grab: (f32, f32),
+    press_at: Point<f64, Logical>,
+    moved: bool,
+}
+
 #[derive(Default)]
 pub struct OrbRuntime {
     open: Eased,
@@ -43,6 +52,10 @@ pub struct OrbRuntime {
     ambient: Eased,
     expanded: bool,
     hovered: bool,
+    corner: Option<Corner>,
+    drag: Option<OrbDrag>,
+    pos: Option<(f32, f32)>,
+    pos_velocity: (f32, f32),
 }
 
 fn seconds_of_day() -> f32 {
@@ -137,6 +150,26 @@ fn flight_pose(
     }
 }
 
+fn nearest_corner(centre: (f32, f32), zone: Rectangle<i32, Logical>) -> Corner {
+    let mid_x = zone.loc.x as f32 + zone.size.w as f32 * 0.5;
+    let mid_y = zone.loc.y as f32 + zone.size.h as f32 * 0.5;
+    match (centre.0 < mid_x, centre.1 < mid_y) {
+        (true, true) => Corner::TopLeft,
+        (false, true) => Corner::TopRight,
+        (true, false) => Corner::BottomLeft,
+        (false, false) => Corner::BottomRight,
+    }
+}
+
+fn clamp_orb(pos: (f32, f32), size: f32, zone: Rectangle<i32, Logical>) -> (f32, f32) {
+    let max_x = (zone.loc.x + zone.size.w) as f32 - size;
+    let max_y = (zone.loc.y + zone.size.h) as f32 - size;
+    (
+        pos.0.clamp(zone.loc.x as f32, max_x.max(zone.loc.x as f32)),
+        pos.1.clamp(zone.loc.y as f32, max_y.max(zone.loc.y as f32)),
+    )
+}
+
 impl SpatilState {
     pub fn note_input(&mut self) {
         self.last_input = Instant::now();
@@ -162,6 +195,7 @@ impl SpatilState {
         let ambient_target = (idle && !hovered && !expanded) as u8 as f32;
         self.orb.ambient.tick(ambient_target, stiffness, damping, dt);
 
+        self.settle_orb(dt);
         let Some(rect) = self.orb_rect() else {
             self.clear_orb();
             return;
@@ -211,19 +245,94 @@ impl SpatilState {
             });
     }
 
+    fn settle_orb(&mut self, dt: f32) {
+        if self.orb.drag.is_some() {
+            return;
+        }
+        let (Some(pos), Some(resting)) = (self.orb.pos, self.orb_resting_rect()) else {
+            return;
+        };
+        let target = (resting.loc.x as f32, resting.loc.y as f32);
+        let (stiffness, damping) = (
+            self.config.animation.spring_stiffness,
+            self.config.animation.spring_damping,
+        );
+        let (x, vx) = spring_step(pos.0, self.orb.pos_velocity.0, target.0, stiffness, damping, dt);
+        let (y, vy) = spring_step(pos.1, self.orb.pos_velocity.1, target.1, stiffness, damping, dt);
+
+        let settled = (x - target.0).abs() < SETTLED
+            && (y - target.1).abs() < SETTLED
+            && vx.abs() < SETTLED * 10.0
+            && vy.abs() < SETTLED * 10.0;
+        if settled {
+            self.orb.pos = None;
+            self.orb.pos_velocity = (0.0, 0.0);
+        } else {
+            self.orb.pos = Some((x, y));
+            self.orb.pos_velocity = (vx, vy);
+        }
+    }
+
     fn clear_orb(&mut self) {
         self.wgpu_state.orb_frame = None;
         self.wgpu_state.cursor_frame = None;
         self.cursor_hidden = false;
     }
 
-    pub fn orb_rect(&self) -> Option<Rectangle<i32, Logical>> {
+    pub fn orb_corner(&self) -> Corner {
+        self.orb.corner.unwrap_or(self.wgpu_state.orb.corner)
+    }
+
+    pub fn orb_zone(&self) -> Rectangle<i32, Logical> {
+        layer_map_for_output(&self.output).non_exclusive_zone()
+    }
+
+    fn orb_resting_rect(&self) -> Option<Rectangle<i32, Logical>> {
         let params = &self.wgpu_state.orb;
         if !params.enabled {
             return None;
         }
-        let zone = layer_map_for_output(&self.output).non_exclusive_zone();
-        corner_rect(zone, params.corner, params.size, params.margin)
+        corner_rect(self.orb_zone(), self.orb_corner(), params.size, params.margin)
+    }
+
+    pub fn orb_rect(&self) -> Option<Rectangle<i32, Logical>> {
+        let resting = self.orb_resting_rect()?;
+        let Some(pos) = self.orb.pos else {
+            return Some(resting);
+        };
+        Some(Rectangle::new(
+            (pos.0.round() as i32, pos.1.round() as i32).into(),
+            resting.size,
+        ))
+    }
+
+    pub fn set_orb_corner(&mut self, corner: Corner) {
+        if self.orb_corner() == corner && self.orb.corner.is_some() {
+            return;
+        }
+        self.orb.corner = Some(corner);
+        let mut state = SessionState::load();
+        state.shell.familiar_corner = Some(corner.as_str().to_string());
+        state.save();
+        tracing::info!("familiar moved to {}", corner.as_str());
+    }
+
+    pub fn restore_orb_corner(&mut self, state: &SessionState) {
+        let Some(name) = state.shell.familiar_corner.as_deref() else {
+            return;
+        };
+        match Corner::parse(name) {
+            Some(corner) => self.orb.corner = Some(corner),
+            None => tracing::warn!("ignoring unknown saved familiar_corner {name:?}"),
+        }
+    }
+
+    pub fn forget_orb_corner(&mut self) {
+        if self.orb.corner.take().is_some() {
+            let mut state = SessionState::load();
+            state.shell.familiar_corner = None;
+            state.save();
+        }
     }
 
     pub fn orb_contains(&self, point: Point<f64, Logical>) -> bool {
@@ -250,6 +359,10 @@ impl SpatilState {
             "rect": rect.map(|r| [r.loc.x, r.loc.y, r.size.w, r.size.h]),
             "idle_ms": params.idle_ms,
             "idle_for_ms": self.last_input.elapsed().as_millis() as u64,
+            "corner": self.orb_corner().as_str(),
+            "corner_pinned": self.orb.corner.is_some(),
+            "dragging": self.orb.drag.is_some(),
+            "settling": self.orb.pos.is_some() && self.orb.drag.is_none(),
             "hovered": self.orb.hovered,
             "expanded": self.orb.expanded,
             "hover": self.orb.hover.value,
@@ -267,7 +380,60 @@ impl SpatilState {
             self.orb.expanded = false;
             return false;
         }
-        self.orb.expanded = !self.orb.expanded;
+        let Some(rect) = self.orb_rect() else {
+            return false;
+        };
+        self.orb.drag = Some(OrbDrag {
+            grab: (
+                rect.loc.x as f32 - point.x as f32,
+                rect.loc.y as f32 - point.y as f32,
+            ),
+            press_at: point,
+            moved: false,
+        });
+        true
+    }
+
+    pub fn orb_dragging(&self) -> bool {
+        self.orb.drag.is_some()
+    }
+
+    pub fn orb_drag_motion(&mut self, point: Point<f64, Logical>) -> bool {
+        let Some(drag) = &self.orb.drag else {
+            return false;
+        };
+        let (dx, dy) = (point.x - drag.press_at.x, point.y - drag.press_at.y);
+        let moved = drag.moved || dx * dx + dy * dy > TAP_SLOP * TAP_SLOP;
+        let target = (point.x as f32 + drag.grab.0, point.y as f32 + drag.grab.1);
+        if !moved {
+            return true;
+        }
+
+        let size = self.wgpu_state.orb.size;
+        let zone = self.orb_zone();
+        if let Some(drag) = &mut self.orb.drag {
+            drag.moved = true;
+        }
+        self.orb.expanded = false;
+        self.orb.pos = Some(clamp_orb(target, size, zone));
+        self.orb.pos_velocity = (0.0, 0.0);
+        true
+    }
+
+    pub fn orb_release(&mut self) -> bool {
+        let Some(drag) = self.orb.drag.take() else {
+            return false;
+        };
+        if !drag.moved {
+            self.orb.expanded = !self.orb.expanded;
+            return true;
+        }
+        if let Some(pos) = self.orb.pos {
+            let half = self.wgpu_state.orb.size * 0.5;
+            let centre = (pos.0 + half, pos.1 + half);
+            let corner = nearest_corner(centre, self.orb_zone());
+            self.set_orb_corner(corner);
+        }
         true
     }
 }
@@ -373,6 +539,57 @@ mod tests {
         let late = flight_pose(1.0, (0.0, 0.0), (500.0, 500.0), 28.0, TAU * 55.0 / 60.0);
         assert!(late.arrow_angle < 0.0, "angle {}", late.arrow_angle);
         assert!(late.arrow_angle.abs() < std::f32::consts::PI, "angle {}", late.arrow_angle);
+    }
+
+    #[test]
+    fn a_dragged_orb_snaps_to_whichever_corner_it_is_nearest() {
+        let screen = zone(0, 0, 1920, 1080);
+        assert_eq!(nearest_corner((10.0, 10.0), screen), Corner::TopLeft);
+        assert_eq!(nearest_corner((1900.0, 10.0), screen), Corner::TopRight);
+        assert_eq!(nearest_corner((10.0, 1070.0), screen), Corner::BottomLeft);
+        assert_eq!(nearest_corner((1900.0, 1070.0), screen), Corner::BottomRight);
+        assert_eq!(
+            nearest_corner((959.0, 539.0), screen),
+            Corner::TopLeft,
+            "just inside both midlines stays in the top-left quadrant",
+        );
+    }
+
+    #[test]
+    fn snapping_is_measured_against_the_free_area_not_the_screen() {
+        let free = zone(0, 400, 1920, 680);
+        assert_eq!(nearest_corner((100.0, 500.0), free), Corner::TopLeft);
+        assert_eq!(nearest_corner((100.0, 1000.0), free), Corner::BottomLeft);
+    }
+
+    #[test]
+    fn a_dragged_orb_cannot_leave_its_zone() {
+        let free = zone(0, 40, 1920, 1040);
+        assert_eq!(clamp_orb((-500.0, -500.0), 56.0, free), (0.0, 40.0));
+        assert_eq!(
+            clamp_orb((9000.0, 9000.0), 56.0, free),
+            (1920.0 - 56.0, 40.0 + 1040.0 - 56.0),
+        );
+        assert_eq!(clamp_orb((300.0, 300.0), 56.0, free), (300.0, 300.0));
+    }
+
+    #[test]
+    fn a_zone_smaller_than_the_orb_still_yields_a_position_inside_it() {
+        let tiny = zone(10, 10, 20, 20);
+        let (x, y) = clamp_orb((-100.0, -100.0), 56.0, tiny);
+        assert_eq!((x, y), (10.0, 10.0), "clamping must not invert its own bounds");
+    }
+
+    #[test]
+    fn corner_names_round_trip_through_their_saved_form() {
+        for corner in [
+            Corner::TopLeft,
+            Corner::TopRight,
+            Corner::BottomLeft,
+            Corner::BottomRight,
+        ] {
+            assert_eq!(Corner::parse(corner.as_str()), Some(corner));
+        }
     }
 
     #[test]

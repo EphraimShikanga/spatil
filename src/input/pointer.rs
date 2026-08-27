@@ -17,7 +17,7 @@ impl SpatilState {
         self.note_input();
         self.pointer_location = (x, y).into();
         self.pointer_moved = true;
-        let on_orb = self.orb_contains(self.pointer_location);
+        let on_orb = self.orb_contains(self.pointer_location) || self.orb_dragging();
         self.set_orb_hover(on_orb);
         // NDC cursor for the Aether parallax camera (y up), in output pixel space.
         let (w, h) = (
@@ -29,6 +29,9 @@ impl SpatilState {
             (1.0 - y / h * 2.0) as f32,
         ];
         self.move_hw_cursor();
+        if self.orb_drag_motion(self.pointer_location) {
+            return;
+        }
         // A live drag owns the pointer; the client sees nothing until release.
         if self.update_drag(self.pointer_location) {
             return;
@@ -68,6 +71,9 @@ impl SpatilState {
 
     pub fn dispatch_pointer_button(&mut self, button_code: u32, button_state: ButtonState) {
         self.note_input();
+        if button_state == ButtonState::Released && self.orb_release() {
+            return;
+        }
         if button_state == ButtonState::Released && self.end_drag() {
             return;
         }

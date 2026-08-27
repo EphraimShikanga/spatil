@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use cgmath::Vector3;
 
-use crate::config::{Action, KeyCombo, SpatilConfig};
+use crate::config::{Action, KeyCombo, SessionState, SpatilConfig};
 use crate::input::drag::{Drag, Navigate};
 use crate::renderer::WgpuState;
 use crate::shell::orb::OrbRuntime;
@@ -217,7 +217,7 @@ impl SpatilState {
 
         let keybindings = config.compile_keybindings();
 
-        Self {
+        let mut state = Self {
             display_handle,
             loop_handle,
             loop_signal,
@@ -251,7 +251,9 @@ impl SpatilState {
             orb: OrbRuntime::default(),
             cursor_hidden: false,
             window_id_counter: 1,
-        }
+        };
+        state.restore_orb_corner(&SessionState::load());
+        state
     }
 
     /// Resolves every toplevel's pending `wl_surface.frame()` callbacks so clients
@@ -451,6 +453,9 @@ impl SpatilState {
 
     pub fn apply_config(&mut self, config: SpatilConfig) {
         self.keybindings = config.compile_keybindings();
+        if config.shell.familiar_corner != self.config.shell.familiar_corner {
+            self.forget_orb_corner();
+        }
 
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.change_repeat_info(config.keyboard.repeat_rate, config.keyboard.repeat_delay);

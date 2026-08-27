@@ -1,9 +1,11 @@
 pub mod bootstrap;
 pub mod keybindings;
 mod loader;
+pub mod state;
 pub mod watcher;
 
 pub use bootstrap::bootstrap_config_dir;
+pub use state::SessionState;
 pub use keybindings::{Action, Direction, KeyCombo, Modifier};
 pub use watcher::spawn_config_watcher;
 

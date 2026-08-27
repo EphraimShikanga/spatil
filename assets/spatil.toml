@@ -171,6 +171,10 @@ present_fill = 0.8            # fraction of the screen a presented window covers
 [shell]
 familiar_enabled = true
 familiar_corner = "bottom_right"  # top_left | top_right | bottom_left | bottom_right
+                                  # Drag the orb to another corner and Spatil remembers it
+                                  # in ~/.local/state/spatil/state.toml, which overrides this
+                                  # value. Delete that file to come back to whatever is here,
+                                  # or just edit this line -- an explicit change wins.
 familiar_size = 56                # diameter in pixels
 familiar_margin = 20              # inset from the screen corner in pixels
 familiar_color = "#12161C"        # orb body
@@ -248,6 +252,11 @@ exec = [
 "Super+equal" = "zoom in"
 "Super+minus" = "zoom out"
 "Super+0" = "reset_view"
+# Move Familiar between corners without the mouse:
+# "Super+Shift+1" = "orb top_left"
+# "Super+Shift+2" = "orb top_right"
+# "Super+Shift+3" = "orb bottom_left"
+# "Super+Shift+4" = "orb bottom_right"
 "Super+bracketleft" = "orbit left"
 "Super+bracketright" = "orbit right"
 "Super+Prior" = "tilt up"      # Page Up

@@ -95,6 +95,7 @@ impl SpatilState {
                 self.wgpu_state.camera_controller.orbit(-sx * step, -sy * step);
             }
             Action::Tilt(adjust) => self.tilt_windows(adjust.sign() * TILT_STEP_DEGREES),
+            Action::OrbCorner(corner) => self.set_orb_corner(corner),
         }
     }
 

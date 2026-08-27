@@ -2,6 +2,7 @@ use std::str::FromStr;
 
 use smithay::input::keyboard::{Keysym, ModifiersState, xkb};
 
+use crate::renderer::orb::Corner;
 use crate::scene::mode::SceneMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +73,7 @@ pub enum Action {
     ResetView,
     Orbit(Direction),
     Tilt(Adjust),
+    OrbCorner(Corner),
 }
 
 impl Action {
@@ -91,6 +93,7 @@ impl Action {
                 "move_window" => arg.parse().ok().map(Action::MoveWindow),
                 "pan" => arg.parse().ok().map(Action::Pan),
                 "orbit" => arg.parse().ok().map(Action::Orbit),
+                "orb" => Corner::parse(arg).map(Action::OrbCorner),
                 "zoom" => match arg {
                     "in" => Some(Action::Zoom(Adjust::Increase)),
                     "out" => Some(Action::Zoom(Adjust::Decrease)),
