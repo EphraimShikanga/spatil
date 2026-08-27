@@ -40,11 +40,23 @@ Windows do not have to flatly face the viewport. Because surfaces are mapped ont
 
 ### 1. "Familiar" Core Shell Interface
 
-Spatil completely eliminates traditional 2D taskbars and status bars (e.g., Waybar) in favor of **Familiar**, a native, contextual orb interface:
+Spatil replaces traditional 2D taskbars and status bars (e.g., Waybar) with **Familiar**, a native, contextual orb interface:
 
-* **Placement:** The orb can be anchor-positioned dynamically into any screen corner.
+* **Placement:** The orb can be anchor-positioned dynamically into any screen corner — set in config, dragged with the mouse, or bound to a key, and remembered between sessions.
 * **System Tray:** Clicking the orb expands a compact, spatial interface revealing system tray status items, controls, and active applets.
-* **Integrated Chronometer:** The orb body functions as the system clock. When the cursor is idle, the interface transitions smoothly into an ambient mode, rendering a procedurally animated dot that revolves around the perimeter of the orb to track elapsed seconds.
+* **Integrated Chronometer:** The orb body functions as the system clock. When the cursor is idle, the mouse cursor itself glides onto the orb and becomes the sweeping second hand, returning to your hand the moment you touch the mouse again.
+
+**Familiar is the default, not a requirement.** Spatil implements
+`zwlr_layer_shell_v1`, the same protocol bars and launchers use on sway, Hyprland
+and niri, so **QuickShell, waybar, ags, eww, wofi, mako and friends run on Spatil
+unmodified** — write against the standard protocol and your shell is portable off
+Spatil as much as onto it. There is deliberately no Spatil-specific plugin API to
+lock anyone in. Set `familiar_enabled = false` to hand the screen entirely to your
+own shell, or leave Familiar on and run both: the orb keeps out of any exclusive
+zone a panel reserves, and the tray specification permits many consumers, so a
+third-party tray and Familiar's can show the same icons side by side. Anything a
+Wayland protocol cannot express — the camera, the scene mode, a window's position
+in three dimensions — is available over Spatil's JSON IPC socket instead.
 
 ### 2. Spatial Minimap & System Diagnostics
 

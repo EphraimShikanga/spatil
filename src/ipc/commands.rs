@@ -32,6 +32,10 @@ impl SpatilState {
                     .look_at(Vector3::new(x, y, z));
             }
             "reset_view" => self.wgpu_state.camera_controller.reset(),
+            "tray_state" => {
+                let event = super::protocol::SpatilEvent::with_data("tray_state", self.tray_report());
+                self.broadcast_event(&event);
+            }
             "orb_state" => {
                 let event = super::protocol::SpatilEvent::with_data("orb_state", self.orb_report());
                 self.broadcast_event(&event);

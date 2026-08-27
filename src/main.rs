@@ -28,6 +28,11 @@ fn main() {
     }
 
     config::bootstrap_config_dir();
+    if std::env::args().any(|a| a == "--tray-probe") {
+        shell::tray::probe();
+        return;
+    }
+
     let config = SpatilConfig::load();
 
     // Autostart entries and keybinding `exec`s inherit this so hooks find the

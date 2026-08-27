@@ -163,11 +163,18 @@ backdrop_dim_color = "#000000"
 present_fill = 0.8            # fraction of the screen a presented window covers
 
 # Familiar: the native orb that replaces a taskbar/status bar. It is the system
-# clock, and after `idle_ms` of stillness it slides into an ambient mode where a
-# dot revolves around its perimeter to track seconds. Set familiar_enabled = false
-# if you would rather run your own zwlr_layer_shell_v1 panel (waybar, QuickShell,
-# ags, ...) in its place -- the orb keeps out of any exclusive zone a panel claims,
-# so the two can also coexist.
+# clock, and after `idle_ms` of stillness your mouse cursor glides onto the orb and
+# becomes the sweeping second hand until you touch the mouse again.
+#
+# Familiar is the default, not a requirement. Spatil speaks zwlr_layer_shell_v1, so
+# QuickShell, waybar, ags, eww, wofi and mako all run here unmodified -- launch them
+# from [autostart] below and they inherit WAYLAND_DISPLAY automatically. Set
+# familiar_enabled = false to hand the screen to your own shell, or leave it true and
+# run both: the orb places itself outside any exclusive zone a panel reserves, so a
+# top bar and a bottom-right orb coexist with no extra configuration.
+#
+# You can also drag the orb to any corner with the mouse; Spatil remembers where you
+# left it (see familiar_corner below).
 [shell]
 familiar_enabled = true
 familiar_corner = "bottom_right"  # top_left | top_right | bottom_left | bottom_right

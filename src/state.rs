@@ -15,6 +15,7 @@ use crate::config::{Action, KeyCombo, SessionState, SpatilConfig};
 use crate::input::drag::{Drag, Navigate};
 use crate::renderer::WgpuState;
 use crate::shell::orb::OrbRuntime;
+use crate::shell::tray::{Tray, init_tray};
 use crate::scene::WORLD_SCALE;
 use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete, Physics, Tween};
 use crate::scene::components::{Billboard, Placement, Popup, Transform, WaylandSurface};
@@ -92,6 +93,7 @@ pub struct SpatilState {
     pub pointer_moved: bool,
     pub last_input: Instant,
     pub orb: OrbRuntime,
+    pub tray: Tray,
     pub cursor_hidden: bool,
     window_id_counter: u32,
 }
@@ -249,10 +251,13 @@ impl SpatilState {
             pointer_moved: false,
             last_input: Instant::now(),
             orb: OrbRuntime::default(),
+            tray: Tray::default(),
             cursor_hidden: false,
             window_id_counter: 1,
         };
         state.restore_orb_corner(&SessionState::load());
+        let tray_requests = init_tray(&state.loop_handle);
+        state.tray.attach(tray_requests);
         state
     }
 
