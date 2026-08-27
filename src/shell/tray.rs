@@ -5,7 +5,77 @@ use std::sync::mpsc::{Sender as StdSender, channel};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::calloop::channel::{Event, channel as calloop_channel};
 
+use smithay::utils::{Logical, Point};
+
+use crate::input::drag::{BTN_MIDDLE, BTN_RIGHT};
+use crate::renderer::hud::TrayQuad;
+use crate::renderer::orb::Corner;
 use crate::state::SpatilState;
+
+const ICON: f32 = 26.0;
+const GAP: f32 = 10.0;
+const RING_INSET: f32 = 20.0;
+const MAX_RING_GROWTH: f32 = 2.6;
+const STAGGER: f32 = 0.07;
+const QUARTER: f32 = std::f32::consts::FRAC_PI_2;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TraySlot {
+    pub centre: (f32, f32),
+    pub size: f32,
+}
+
+fn arc_start(corner: Corner) -> f32 {
+    match corner {
+        Corner::TopLeft => 0.0,
+        Corner::TopRight => QUARTER,
+        Corner::BottomRight => std::f32::consts::PI,
+        Corner::BottomLeft => 3.0 * QUARTER,
+    }
+}
+
+pub fn tray_slots(
+    corner: Corner,
+    orb_centre: (f32, f32),
+    orb_radius: f32,
+    count: usize,
+) -> Vec<TraySlot> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let base = orb_radius + ICON * 0.5 + RING_INSET;
+    let pitch = ICON + GAP;
+    let needed = count as f32 * pitch / QUARTER;
+    let radius = base.max(needed).min(base * MAX_RING_GROWTH);
+
+    let step = pitch / radius;
+    let fits = (((QUARTER / step).floor() as usize) + 1).max(1);
+    let shown = count.min(fits);
+    if shown < count {
+        tracing::warn!("tray arc holds {shown} of {count} items; the rest are not shown");
+    }
+
+    let span = (shown as f32 - 1.0) * step;
+    let mid = arc_start(corner) + QUARTER * 0.5;
+    let first = mid - span * 0.5;
+    (0..shown)
+        .map(|i| {
+            let angle = first + i as f32 * step;
+            TraySlot {
+                centre: (
+                    orb_centre.0 + angle.cos() * radius,
+                    orb_centre.1 + angle.sin() * radius,
+                ),
+                size: ICON,
+            }
+        })
+        .collect()
+}
+
+fn stagger(open: f32, index: usize) -> f32 {
+    let lo = (index as f32 * STAGGER).min(0.6);
+    ((open - lo) / (1.0 - lo).max(0.001)).clamp(0.0, 1.0)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayRole {
@@ -206,6 +276,137 @@ pub fn init_tray(loop_handle: &LoopHandle<'static, SpatilState>) -> Option<StdSe
             tracing::warn!("could not start the tray thread: {err}; system tray disabled");
             None
         }
+    }
+}
+
+impl SpatilState {
+    pub fn tick_tray(&mut self) {
+        if !self.wgpu_state.tray_icons.is_empty() {
+            let live: Vec<String> = self.tray.items().iter().map(|i| i.key.clone()).collect();
+            self.wgpu_state
+                .tray_icons
+                .retain(|key, _| live.iter().any(|k| k == key));
+        }
+
+        let open = self
+            .wgpu_state
+            .orb_frame
+            .as_ref()
+            .map_or(0.0, |frame| frame.open);
+        if open <= 0.002 {
+            self.wgpu_state.tray_layout.clear();
+            return;
+        }
+        let Some(rect) = self.orb_rect() else {
+            self.wgpu_state.tray_layout.clear();
+            return;
+        };
+
+        let pending: Vec<(String, u32, u32, Vec<u8>)> = self
+            .tray
+            .visible_items()
+            .filter(|item| !self.wgpu_state.has_tray_icon(&item.key))
+            .filter_map(|item| {
+                item.pixmap
+                    .as_ref()
+                    .map(|p| (item.key.clone(), p.width, p.height, p.bgra.clone()))
+            })
+            .collect();
+        for (key, width, height, bgra) in pending {
+            self.wgpu_state.upload_tray_icon(key, width, height, &bgra);
+        }
+
+        let drawable: Vec<String> = self
+            .tray
+            .visible_items()
+            .filter(|item| self.wgpu_state.has_tray_icon(&item.key))
+            .map(|item| item.key.clone())
+            .collect();
+
+        let radius = rect.size.w as f32 * 0.5;
+        let centre = (rect.loc.x as f32 + radius, rect.loc.y as f32 + radius);
+        let slots = tray_slots(self.orb_corner(), centre, radius, drawable.len());
+
+        self.wgpu_state.tray_layout = drawable
+            .into_iter()
+            .zip(slots)
+            .enumerate()
+            .filter_map(|(i, (key, slot))| {
+                let reveal = stagger(open, i);
+                (reveal > 0.002).then(|| {
+                    let size = slot.size * (0.6 + 0.4 * reveal);
+                    TrayQuad {
+                        key,
+                        rect: [
+                            slot.centre.0 - size * 0.5,
+                            slot.centre.1 - size * 0.5,
+                            size,
+                            size,
+                        ],
+                        alpha: reveal,
+                    }
+                })
+            })
+            .collect();
+    }
+
+    pub fn tray_item_at(&self, point: Point<f64, Logical>) -> Option<String> {
+        self.wgpu_state.tray_layout.iter().find_map(|quad| {
+            let half = quad.rect[2] as f64 * 0.5;
+            let cx = quad.rect[0] as f64 + half;
+            let cy = quad.rect[1] as f64 + half;
+            let (dx, dy) = (point.x - cx, point.y - cy);
+            (dx * dx + dy * dy <= half * half).then(|| quad.key.clone())
+        })
+    }
+
+    fn tray_address(&self, key: &str) -> Option<(String, String)> {
+        self.tray
+            .items()
+            .iter()
+            .find(|item| item.key == key)
+            .map(|item| (item.bus.clone(), item.path.clone()))
+    }
+
+    pub fn tray_press(&mut self, point: Point<f64, Logical>, button: u32) -> bool {
+        let Some(key) = self.tray_item_at(point) else {
+            return false;
+        };
+        let Some((bus, path)) = self.tray_address(&key) else {
+            return false;
+        };
+        let (x, y) = (point.x as i32, point.y as i32);
+        let request = match button {
+            BTN_RIGHT => TrayRequest::ContextMenu { bus, path, x, y },
+            BTN_MIDDLE => TrayRequest::SecondaryActivate { bus, path, x, y },
+            _ => TrayRequest::Activate { bus, path, x, y },
+        };
+        self.tray.request(request);
+        true
+    }
+
+    pub fn tray_activate_index(&mut self, index: usize) -> bool {
+        let Some((bus, path)) = self
+            .tray
+            .visible_items()
+            .nth(index)
+            .map(|item| (item.bus.clone(), item.path.clone()))
+        else {
+            return false;
+        };
+        self.tray.request(TrayRequest::Activate { bus, path, x: 0, y: 0 });
+        true
+    }
+
+    pub fn tray_scroll(&mut self, point: Point<f64, Logical>, delta: i32) -> bool {
+        let Some(key) = self.tray_item_at(point) else {
+            return false;
+        };
+        let Some((bus, path)) = self.tray_address(&key) else {
+            return false;
+        };
+        self.tray.request(TrayRequest::Scroll { bus, path, delta });
+        true
     }
 }
 
@@ -410,6 +611,68 @@ mod tests {
         tray.apply(TrayEvent::Unavailable);
         assert_eq!(tray.role, TrayRole::Unavailable);
         assert!(tray.items().is_empty());
+    }
+
+    #[test]
+    fn an_empty_tray_has_no_slots() {
+        assert!(tray_slots(Corner::BottomRight, (100.0, 100.0), 28.0, 0).is_empty());
+    }
+
+    #[test]
+    fn the_arc_opens_into_the_screen_from_each_corner() {
+        let centre = (1000.0, 800.0);
+        let one = |corner| tray_slots(corner, centre, 28.0, 1)[0].centre;
+
+        let br = one(Corner::BottomRight);
+        assert!(br.0 < centre.0 && br.1 < centre.1, "bottom-right fans up-left: {br:?}");
+        let bl = one(Corner::BottomLeft);
+        assert!(bl.0 > centre.0 && bl.1 < centre.1, "bottom-left fans up-right: {bl:?}");
+        let tl = one(Corner::TopLeft);
+        assert!(tl.0 > centre.0 && tl.1 > centre.1, "top-left fans down-right: {tl:?}");
+        let tr = one(Corner::TopRight);
+        assert!(tr.0 < centre.0 && tr.1 > centre.1, "top-right fans down-left: {tr:?}");
+    }
+
+    #[test]
+    fn items_sit_on_a_circle_and_do_not_overlap() {
+        let centre = (1000.0, 800.0);
+        let slots = tray_slots(Corner::BottomRight, centre, 28.0, 5);
+        assert_eq!(slots.len(), 5);
+
+        let radius = |s: &TraySlot| {
+            ((s.centre.0 - centre.0).powi(2) + (s.centre.1 - centre.1).powi(2)).sqrt()
+        };
+        let first = radius(&slots[0]);
+        for slot in &slots {
+            assert!((radius(slot) - first).abs() < 0.01, "all slots share one radius");
+        }
+        for pair in slots.windows(2) {
+            let gap = ((pair[0].centre.0 - pair[1].centre.0).powi(2)
+                + (pair[0].centre.1 - pair[1].centre.1).powi(2))
+            .sqrt();
+            assert!(gap >= ICON, "neighbours must not overlap, gap was {gap}");
+        }
+    }
+
+    #[test]
+    fn a_crowded_tray_grows_its_ring_rather_than_bunching_up() {
+        let centre = (1000.0, 800.0);
+        let radius = |n| {
+            let s = &tray_slots(Corner::BottomRight, centre, 28.0, n)[0];
+            ((s.centre.0 - centre.0).powi(2) + (s.centre.1 - centre.1).powi(2)).sqrt()
+        };
+        assert!(radius(12) > radius(2), "more items push the arc outward");
+    }
+
+    #[test]
+    fn the_reveal_staggers_but_always_finishes() {
+        assert_eq!(stagger(0.0, 0), 0.0);
+        assert_eq!(stagger(1.0, 0), 1.0);
+        assert_eq!(stagger(1.0, 7), 1.0, "every icon is fully out when open");
+        assert!(
+            stagger(0.5, 0) > stagger(0.5, 4),
+            "earlier icons lead the later ones",
+        );
     }
 
     #[test]

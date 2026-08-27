@@ -333,6 +333,7 @@ impl SpatilState {
         self.wgpu_state.scene_transition.tick(dt_ms);
         self.tick_backdrop(dt_ms);
         self.tick_orb(dt_ms);
+        self.tick_tray();
         // Derived, not latched: a Presented window that is *closed* rather than
         // dismissed would otherwise leave the parallax frozen for good.
         self.wgpu_state.parallax_frozen =

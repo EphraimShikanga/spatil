@@ -8,6 +8,12 @@ pub struct HudQuad {
     pub rect: [f32; 4],
 }
 
+pub struct TrayQuad {
+    pub key: String,
+    pub rect: [f32; 4],
+    pub alpha: f32,
+}
+
 #[rustfmt::skip]
 pub fn hud_mvp(rect: [f32; 4], screen_w: f32, screen_h: f32) -> Matrix4<f32> {
     let [x, y, w, h] = rect;

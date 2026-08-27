@@ -32,6 +32,12 @@ impl SpatilState {
                     .look_at(Vector3::new(x, y, z));
             }
             "reset_view" => self.wgpu_state.camera_controller.reset(),
+            "tray_activate" => {
+                let index = cmd.window_id.unwrap_or(0) as usize;
+                if !self.tray_activate_index(index) {
+                    tracing::warn!(index, "tray_activate for an index with no visible item");
+                }
+            }
             "tray_state" => {
                 let event = super::protocol::SpatilEvent::with_data("tray_state", self.tray_report());
                 self.broadcast_event(&event);

@@ -30,7 +30,7 @@ use crate::scene::systems::update_world_matrices;
 use backdrop::{BackdropPipeline, BackdropUniform};
 use grid::{GridPipeline, GridUniform};
 use cursor::{CursorFrame, CursorPipeline, CursorUniform};
-use hud::{HudPipeline, HudQuad, hud_mvp};
+use hud::{HudPipeline, HudQuad, TrayQuad, hud_mvp};
 use orb::{OrbFrame, OrbParams, OrbPipeline, OrbUniform};
 use particles::{ParticlePipeline, ParticleUniform};
 use pipeline::{Camera, OPENGL_TO_WGPU_MATRIX, QuadPipeline, QuadUniform};
@@ -133,6 +133,8 @@ pub struct WgpuState {
     pub orb_frame: Option<OrbFrame>,
     pub cursor_pipeline: CursorPipeline,
     pub cursor_frame: Option<CursorFrame>,
+    pub tray_icons: HashMap<String, TexturedQuad>,
+    pub tray_layout: Vec<TrayQuad>,
     pub camera: Camera,
     pub camera_controller: CameraController,
     pub scene_mode: SceneMode,
@@ -280,6 +282,8 @@ impl WgpuState {
             orb_frame: None,
             cursor_pipeline,
             cursor_frame: None,
+            tray_icons: HashMap::new(),
+            tray_layout: Vec::new(),
             camera,
             camera_controller: CameraController::default(),
             scene_mode,
@@ -387,6 +391,29 @@ impl WgpuState {
 
     pub fn remove_dmabuf_texture(&mut self, buffer_id: &ObjectId) {
         self.dmabuf_textures.remove(buffer_id);
+    }
+
+    pub fn upload_tray_icon(&mut self, key: String, width: u32, height: u32, bgra: &[u8]) {
+        let quad = TexturedQuad::from_bytes(
+            &self.device,
+            &self.queue,
+            &self.quad_pipeline.bind_group_layout,
+            &self.shadow_pipeline.quad_bind_group_layout,
+            width,
+            height,
+            width * 4,
+            bgra,
+            true,
+        );
+        self.tray_icons.insert(key, quad);
+    }
+
+    pub fn remove_tray_icon(&mut self, key: &str) {
+        self.tray_icons.remove(key);
+    }
+
+    pub fn has_tray_icon(&self, key: &str) -> bool {
+        self.tray_icons.contains_key(key)
     }
 
     pub fn remove_texture(&mut self, id: &ObjectId) {
@@ -642,6 +669,30 @@ impl WgpuState {
             );
         }
 
+        let mut tray_list: Vec<(&TexturedQuad, f32)> = Vec::new();
+        for entry in &self.tray_layout {
+            let Some(quad) = self.tray_icons.get(&entry.key) else {
+                continue;
+            };
+            let mvp = hud_mvp(entry.rect, screen_w, screen_h);
+            self.queue.write_buffer(
+                &quad.uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[QuadUniform {
+                    mvp: mvp.into(),
+                    model: mvp.into(),
+                    uv_scale: quad.uv_scale,
+                    alpha: entry.alpha,
+                    border_width: 0.0,
+                    tint: [0.0; 4],
+                    border_color: [0.0; 4],
+                    surface_alpha: 1.0,
+                    _pad: [0.0; 3],
+                }]),
+            );
+            tray_list.push((quad, entry.alpha));
+        }
+
         if let Some(frame) = &self.cursor_frame {
             self.queue.write_buffer(
                 &self.cursor_pipeline.uniform_buffer,
@@ -849,6 +900,19 @@ impl WgpuState {
                 render_pass.set_pipeline(&self.orb_pipeline.pipeline);
                 render_pass.set_bind_group(0, &self.orb_pipeline.uniform_bind_group, &[]);
                 render_pass.draw(0..6, 0..1);
+            }
+
+            if !tray_list.is_empty() {
+                render_pass.set_pipeline(&self.hud_pipeline.pipeline);
+                render_pass.set_vertex_buffer(0, self.quad_pipeline.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    self.quad_pipeline.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint16,
+                );
+                for (quad, _) in &tray_list {
+                    render_pass.set_bind_group(0, &quad.bind_group, &[]);
+                    render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
+                }
             }
 
             if self.cursor_frame.is_some() {
