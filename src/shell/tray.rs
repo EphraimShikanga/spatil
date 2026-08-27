@@ -10,6 +10,7 @@ use smithay::utils::{Logical, Point};
 
 use crate::input::drag::{BTN_MIDDLE, BTN_RIGHT};
 use crate::renderer::hud::TrayQuad;
+use crate::shell::module::{self, ModuleAction, ModuleId, ModuleState};
 use crate::renderer::orb::Corner;
 use crate::state::SpatilState;
 
@@ -305,16 +306,26 @@ pub fn init_tray(loop_handle: &LoopHandle<'static, SpatilState>) -> Option<StdSe
 }
 
 impl SpatilState {
-    pub fn tick_tray(&mut self) {
-        for key in std::mem::take(&mut self.tray.stale_icons) {
-            self.wgpu_state.remove_tray_icon(&key);
-        }
+    pub fn shell_modules(&self) -> Vec<ModuleState> {
+        let mut modules: Vec<ModuleState> = self
+            .tray
+            .visible_items()
+            .map(|item| {
+                let mut module = ModuleState::new(ModuleId::Tray(item.key.clone()));
+                module.icon = item.pixmap.clone();
+                module.label = item.title.clone();
+                module.tooltip = item.title.clone();
+                module.urgent = item.status == TrayStatus::NeedsAttention;
+                module
+            })
+            .collect();
+        module::order(&mut modules);
+        modules
+    }
 
-        if !self.wgpu_state.tray_icons.is_empty() {
-            let live: Vec<String> = self.tray.items().iter().map(|i| i.key.clone()).collect();
-            self.wgpu_state
-                .tray_icons
-                .retain(|key, _| live.iter().any(|k| k == key));
+    pub fn tick_modules(&mut self) {
+        for key in std::mem::take(&mut self.tray.stale_icons) {
+            self.wgpu_state.remove_tray_icon(&ModuleId::Tray(key).key());
         }
 
         let open = self
@@ -322,70 +333,76 @@ impl SpatilState {
             .orb_frame
             .as_ref()
             .map_or(0.0, |frame| frame.open);
+        let modules = self.shell_modules();
+
+        if !self.wgpu_state.tray_icons.is_empty() {
+            let live: Vec<String> = modules.iter().map(|m| m.id.key()).collect();
+            self.wgpu_state
+                .tray_icons
+                .retain(|key, _| live.iter().any(|k| k == key));
+        }
+
         if open <= 0.002 {
             self.wgpu_state.tray_layout.clear();
+            self.module_slots.clear();
             return;
         }
         let Some(rect) = self.orb_rect() else {
             self.wgpu_state.tray_layout.clear();
+            self.module_slots.clear();
             return;
         };
 
-        let pending: Vec<(String, u32, u32, Vec<u8>)> = self
-            .tray
-            .visible_items()
-            .filter(|item| !self.wgpu_state.has_tray_icon(&item.key))
-            .filter_map(|item| {
-                item.pixmap
-                    .as_ref()
-                    .map(|p| (item.key.clone(), p.width, p.height, p.bgra.clone()))
-            })
-            .collect();
-        for (key, width, height, bgra) in pending {
-            self.wgpu_state.upload_tray_icon(key, width, height, &bgra);
+        for module in modules.iter().filter(|m| m.drawable()) {
+            let key = module.id.key();
+            if self.wgpu_state.has_tray_icon(&key) {
+                continue;
+            }
+            let Some(icon) = &module.icon else { continue };
+            let (w, h, bgra) = (icon.width, icon.height, icon.bgra.clone());
+            self.wgpu_state.upload_tray_icon(key, w, h, &bgra);
         }
 
-        let drawable: Vec<String> = self
-            .tray
-            .visible_items()
-            .filter(|item| self.wgpu_state.has_tray_icon(&item.key))
-            .map(|item| item.key.clone())
+        let drawable: Vec<ModuleId> = modules
+            .into_iter()
+            .filter(|m| m.drawable())
+            .map(|m| m.id)
             .collect();
 
         let radius = rect.size.w as f32 * 0.5;
         let centre = (rect.loc.x as f32 + radius, rect.loc.y as f32 + radius);
         let slots = tray_slots(self.orb_corner(), centre, radius, drawable.len());
 
+        self.module_slots.clear();
         self.wgpu_state.tray_layout = drawable
             .into_iter()
             .zip(slots)
             .enumerate()
-            .filter_map(|(i, (key, slot))| {
+            .filter_map(|(i, (id, slot))| {
                 let reveal = stagger(open, i);
-                (reveal > 0.002).then(|| {
-                    let size = slot.size * (0.6 + 0.4 * reveal);
-                    TrayQuad {
-                        key,
-                        rect: [
-                            slot.centre.0 - size * 0.5,
-                            slot.centre.1 - size * 0.5,
-                            size,
-                            size,
-                        ],
-                        alpha: reveal,
-                    }
-                })
+                if reveal <= 0.002 {
+                    return None;
+                }
+                let size = slot.size * (0.6 + 0.4 * reveal);
+                let rect = [
+                    slot.centre.0 - size * 0.5,
+                    slot.centre.1 - size * 0.5,
+                    size,
+                    size,
+                ];
+                self.module_slots.push((id.clone(), rect));
+                Some(TrayQuad { key: id.key(), rect, alpha: reveal })
             })
             .collect();
     }
 
-    pub fn tray_item_at(&self, point: Point<f64, Logical>) -> Option<String> {
-        self.wgpu_state.tray_layout.iter().find_map(|quad| {
-            let half = quad.rect[2] as f64 * 0.5;
-            let cx = quad.rect[0] as f64 + half;
-            let cy = quad.rect[1] as f64 + half;
+    pub fn module_at(&self, point: Point<f64, Logical>) -> Option<ModuleId> {
+        self.module_slots.iter().find_map(|(id, rect)| {
+            let half = rect[2] as f64 * 0.5;
+            let cx = rect[0] as f64 + half;
+            let cy = rect[1] as f64 + half;
             let (dx, dy) = (point.x - cx, point.y - cy);
-            (dx * dx + dy * dy <= half * half).then(|| quad.key.clone())
+            (dx * dx + dy * dy <= half * half).then(|| id.clone())
         })
     }
 
@@ -397,21 +414,49 @@ impl SpatilState {
             .map(|item| (item.bus.clone(), item.path.clone()))
     }
 
-    pub fn tray_press(&mut self, point: Point<f64, Logical>, button: u32) -> bool {
-        let Some(key) = self.tray_item_at(point) else {
-            return false;
+    pub fn module_action(
+        &mut self,
+        id: &ModuleId,
+        action: ModuleAction,
+        point: Point<f64, Logical>,
+    ) -> bool {
+        let ModuleId::Tray(key) = id else {
+            tracing::debug!("no handler yet for the {:?} module", id);
+            return true;
         };
-        let Some((bus, path)) = self.tray_address(&key) else {
+        let Some((bus, path)) = self.tray_address(key) else {
             return false;
         };
         let (x, y) = (point.x as i32, point.y as i32);
-        let request = match button {
-            BTN_RIGHT => TrayRequest::ContextMenu { bus, path, x, y },
-            BTN_MIDDLE => TrayRequest::SecondaryActivate { bus, path, x, y },
-            _ => TrayRequest::Activate { bus, path, x, y },
+        let request = match action {
+            ModuleAction::Activate => TrayRequest::Activate { bus, path, x, y },
+            ModuleAction::Secondary => TrayRequest::SecondaryActivate { bus, path, x, y },
+            ModuleAction::Context => TrayRequest::ContextMenu { bus, path, x, y },
+            ModuleAction::ScrollUp => TrayRequest::Scroll { bus, path, delta: -1 },
+            ModuleAction::ScrollDown => TrayRequest::Scroll { bus, path, delta: 1 },
         };
         self.tray.request(request);
         true
+    }
+
+    pub fn module_press(&mut self, point: Point<f64, Logical>, button: u32) -> bool {
+        let Some(id) = self.module_at(point) else {
+            return false;
+        };
+        let action = match button {
+            BTN_RIGHT => ModuleAction::Context,
+            BTN_MIDDLE => ModuleAction::Secondary,
+            _ => ModuleAction::Activate,
+        };
+        self.module_action(&id, action, point)
+    }
+
+    pub fn module_scroll(&mut self, point: Point<f64, Logical>, delta: i32) -> bool {
+        let Some(id) = self.module_at(point) else {
+            return false;
+        };
+        let action = if delta < 0 { ModuleAction::ScrollUp } else { ModuleAction::ScrollDown };
+        self.module_action(&id, action, point)
     }
 
     pub fn tray_activate_index(&mut self, index: usize) -> bool {
@@ -424,17 +469,6 @@ impl SpatilState {
             return false;
         };
         self.tray.request(TrayRequest::Activate { bus, path, x: 0, y: 0 });
-        true
-    }
-
-    pub fn tray_scroll(&mut self, point: Point<f64, Logical>, delta: i32) -> bool {
-        let Some(key) = self.tray_item_at(point) else {
-            return false;
-        };
-        let Some((bus, path)) = self.tray_address(&key) else {
-            return false;
-        };
-        self.tray.request(TrayRequest::Scroll { bus, path, delta });
         true
     }
 }

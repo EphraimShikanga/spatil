@@ -15,6 +15,7 @@ use crate::config::{Action, KeyCombo, SessionState, SpatilConfig};
 use crate::input::drag::{Drag, Navigate};
 use crate::renderer::WgpuState;
 use crate::shell::orb::OrbRuntime;
+use crate::shell::module::ModuleId;
 use crate::shell::tray::{Tray, init_tray};
 use crate::scene::WORLD_SCALE;
 use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete, Physics, Tween};
@@ -94,6 +95,7 @@ pub struct SpatilState {
     pub last_input: Instant,
     pub orb: OrbRuntime,
     pub tray: Tray,
+    pub module_slots: Vec<(ModuleId, [f32; 4])>,
     pub cursor_hidden: bool,
     window_id_counter: u32,
 }
@@ -252,6 +254,7 @@ impl SpatilState {
             last_input: Instant::now(),
             orb: OrbRuntime::default(),
             tray: Tray::default(),
+            module_slots: Vec::new(),
             cursor_hidden: false,
             window_id_counter: 1,
         };
@@ -333,7 +336,7 @@ impl SpatilState {
         self.wgpu_state.scene_transition.tick(dt_ms);
         self.tick_backdrop(dt_ms);
         self.tick_orb(dt_ms);
-        self.tick_tray();
+        self.tick_modules();
         // Derived, not latched: a Presented window that is *closed* rather than
         // dismissed would otherwise leave the parallax frozen for good.
         self.wgpu_state.parallax_frozen =

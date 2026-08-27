@@ -19,7 +19,7 @@ impl SpatilState {
         self.pointer_moved = true;
         let on_orb = self.orb_contains(self.pointer_location)
             || self.orb_dragging()
-            || self.tray_item_at(self.pointer_location).is_some();
+            || self.module_at(self.pointer_location).is_some();
         self.set_orb_hover(on_orb);
         // NDC cursor for the Aether parallax camera (y up), in output pixel space.
         let (w, h) = (
@@ -80,11 +80,11 @@ impl SpatilState {
             return;
         }
         if button_state == ButtonState::Pressed
-            && self.tray_press(self.pointer_location, button_code)
+            && self.module_press(self.pointer_location, button_code)
         {
             return;
         }
-        if button_state == ButtonState::Released && self.tray_item_at(self.pointer_location).is_some() {
+        if button_state == ButtonState::Released && self.module_at(self.pointer_location).is_some() {
             return;
         }
         if button_state == ButtonState::Pressed
@@ -175,7 +175,7 @@ impl SpatilState {
     pub fn dispatch_pointer_axis(&mut self, frame: AxisFrame) {
         self.note_input();
         if let Some(steps) = wheel_steps(&frame)
-            && self.tray_scroll(self.pointer_location, -steps.round() as i32)
+            && self.module_scroll(self.pointer_location, -steps.round() as i32)
         {
             return;
         }
