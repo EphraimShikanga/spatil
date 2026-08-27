@@ -1,4 +1,5 @@
 mod bus;
+mod icon;
 
 use std::sync::mpsc::{Sender as StdSender, channel};
 

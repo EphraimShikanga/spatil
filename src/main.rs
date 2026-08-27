@@ -39,6 +39,9 @@ fn main() {
     // socket without hardcoding its name.
     unsafe {
         std::env::set_var("SPATIL_SOCKET", &config.general.socket_name);
+        if !config.shell.icon_theme.is_empty() {
+            std::env::set_var("SPATIL_ICON_THEME", &config.shell.icon_theme);
+        }
     }
 
     backend::run(config);

@@ -43,6 +43,7 @@ pub struct Shell {
     pub familiar_color: String,
     pub familiar_accent: String,
     pub idle_ms: u64,
+    pub icon_theme: String,
 }
 
 impl Default for Shell {
@@ -55,6 +56,7 @@ impl Default for Shell {
             familiar_color: "#12161C".to_string(),
             familiar_accent: "#4A90E2".to_string(),
             idle_ms: 5000,
+            icon_theme: String::new(),
         }
     }
 }

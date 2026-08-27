@@ -130,8 +130,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     if (orb.open > 0.001) {
         let r = mix(body_r, OPEN_RING, orb.open);
-        let open_m = ring_mask(d, r, 0.03, aa);
-        color = over(color, vec4<f32>(accent, open_m * orb.open * 0.8));
+        let open_m = ring_mask(d, r, 0.11, aa);
+        color = over(color, vec4<f32>(accent, open_m * orb.open * 0.9));
+
+        let halo = (1.0 - smoothstep(body_r, r, d)) * step(body_r, d);
+        color = over(color, vec4<f32>(orb.body_color.rgb, halo * orb.open * 0.5));
     }
 
     if (color.a < 0.002) {

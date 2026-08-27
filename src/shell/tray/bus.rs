@@ -15,6 +15,7 @@ pub const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const ITEM_PATH: &str = "/StatusNotifierItem";
 const PROTOCOL_VERSION: i32 = 0;
 const MAX_ICON_EDGE: i32 = 128;
+const SYMBOLIC_TINT: [u8; 3] = [0xDC, 0xE3, 0xEC];
 
 #[proxy(interface = "org.kde.StatusNotifierItem", assume_defaults = false)]
 trait Item {
@@ -30,6 +31,8 @@ trait Item {
     fn icon_pixmap(&self) -> zbus::Result<Vec<(i32, i32, Vec<u8>)>>;
     #[zbus(property)]
     fn menu(&self) -> zbus::Result<OwnedObjectPath>;
+    #[zbus(property)]
+    fn icon_theme_path(&self) -> zbus::Result<String>;
 
     fn activate(&self, x: i32, y: i32) -> zbus::Result<()>;
     fn secondary_activate(&self, x: i32, y: i32) -> zbus::Result<()>;
@@ -354,6 +357,24 @@ pub async fn read_item(
         .map(|s| TrayStatus::parse(&s))
         .unwrap_or(TrayStatus::Active);
 
+    let icon_name = proxy.icon_name().await.unwrap_or_default();
+    let pixmap = match proxy.icon_pixmap().await.ok().and_then(best_pixmap) {
+        Some(pixmap) => Some(pixmap),
+        None => {
+            let theme_path = proxy.icon_theme_path().await.ok().filter(|p| !p.is_empty());
+            super::icon::resolve(&icon_name, theme_path.as_deref()).and_then(|found| {
+                let mut decoded = super::icon::decode(&found)?;
+                if super::icon::is_symbolic(&found) {
+                    super::icon::tint(&mut decoded, SYMBOLIC_TINT);
+                }
+                Some(decoded)
+            })
+        }
+    };
+    if pixmap.is_none() && !icon_name.is_empty() {
+        tracing::info!("no drawable icon for {icon_name:?}; the item is tracked but not shown");
+    }
+
     Ok(TrayItem {
         key: format!("{bus}{path}"),
         bus: bus.to_string(),
@@ -361,8 +382,8 @@ pub async fn read_item(
         id: proxy.id().await.unwrap_or_default(),
         title: proxy.title().await.unwrap_or_default(),
         status,
-        icon_name: proxy.icon_name().await.unwrap_or_default(),
-        pixmap: proxy.icon_pixmap().await.ok().and_then(best_pixmap),
+        icon_name,
+        pixmap,
         menu: proxy.menu().await.ok().map(|p| p.to_string()),
     })
 }
