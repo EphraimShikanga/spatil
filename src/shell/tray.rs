@@ -131,6 +131,7 @@ pub struct TrayPixmap {
 pub struct TrayItem {
     pub key: String,
     pub bus: String,
+    pub owner: Option<String>,
     pub path: String,
     pub id: String,
     pub title: String,
@@ -144,12 +145,21 @@ impl TrayItem {
     pub fn visible(&self) -> bool {
         self.status != TrayStatus::Passive
     }
+
+    pub fn answers_to(&self, name: &str) -> bool {
+        self.bus == name || self.owner.as_deref() == Some(name)
+    }
+
+    fn pixels(&self) -> Option<&[u8]> {
+        self.pixmap.as_ref().map(|p| p.bgra.as_slice())
+    }
 }
 
 pub enum TrayEvent {
     Unavailable,
     Role(TrayRole),
     Discovered { bus: String, path: String },
+    Changed(String),
     OwnerLost(String),
     Updated(Box<TrayItem>),
     Removed(String),
@@ -180,6 +190,7 @@ pub struct Tray {
     pub role: TrayRole,
     items: Vec<TrayItem>,
     requests: Option<StdSender<TrayRequest>>,
+    stale_icons: Vec<String>,
 }
 
 impl Default for TrayRole {
@@ -226,13 +237,26 @@ impl Tray {
                 (!self.items.iter().any(|item| item.key == key))
                     .then_some(TrayRequest::Refresh { bus, path })
             }
+            TrayEvent::Changed(sender) => self
+                .items
+                .iter()
+                .find(|item| item.answers_to(&sender))
+                .map(|item| TrayRequest::Refresh {
+                    bus: item.bus.clone(),
+                    path: item.path.clone(),
+                }),
             TrayEvent::OwnerLost(name) => {
-                self.items.retain(|item| item.bus != name);
+                self.items.retain(|item| !item.answers_to(&name));
                 None
             }
             TrayEvent::Updated(item) => {
                 match self.items.iter_mut().find(|existing| existing.key == item.key) {
-                    Some(existing) => *existing = *item,
+                    Some(existing) => {
+                        if existing.pixels() != item.pixels() {
+                            self.stale_icons.push(item.key.clone());
+                        }
+                        *existing = *item;
+                    }
                     None => {
                         tracing::info!(
                             "tray item appeared: {} ({})",
@@ -282,6 +306,10 @@ pub fn init_tray(loop_handle: &LoopHandle<'static, SpatilState>) -> Option<StdSe
 
 impl SpatilState {
     pub fn tick_tray(&mut self) {
+        for key in std::mem::take(&mut self.tray.stale_icons) {
+            self.wgpu_state.remove_tray_icon(&key);
+        }
+
         if !self.wgpu_state.tray_icons.is_empty() {
             let live: Vec<String> = self.tray.items().iter().map(|i| i.key.clone()).collect();
             self.wgpu_state
@@ -458,6 +486,7 @@ pub fn probe() {
             TrayEvent::Unavailable => println!("PROBE: role=unavailable"),
             TrayEvent::Discovered { bus, path } => println!("PROBE: discovered {bus}{path}"),
             TrayEvent::Removed(key) => println!("PROBE: removed {key}"),
+            TrayEvent::Changed(sender) => println!("PROBE: changed {sender}"),
             TrayEvent::OwnerLost(name) => println!("PROBE: owner gone {name}"),
             TrayEvent::Updated(item) => println!(
                 "PROBE: item id={} title={:?} status={} pixmap={:?} menu={}",
@@ -525,6 +554,7 @@ mod tests {
         TrayItem {
             key: key.to_string(),
             bus: ":1.1".to_string(),
+            owner: None,
             path: "/StatusNotifierItem".to_string(),
             id: "demo".to_string(),
             title: "Demo".to_string(),
@@ -553,6 +583,43 @@ mod tests {
         tray.apply(TrayEvent::Updated(Box::new(item("a", TrayStatus::NeedsAttention))));
         assert_eq!(tray.items().len(), 1);
         assert_eq!(tray.items()[0].status, TrayStatus::NeedsAttention);
+    }
+
+    #[test]
+    fn a_changed_icon_invalidates_the_cached_texture() {
+        let mut tray = Tray::default();
+        let mut first = item("a", TrayStatus::Active);
+        first.pixmap = Some(TrayPixmap { width: 1, height: 1, bgra: vec![1, 2, 3, 4] });
+        tray.apply(TrayEvent::Updated(Box::new(first.clone())));
+        assert!(tray.stale_icons.is_empty(), "a first upload is not stale");
+
+        let mut same = first.clone();
+        same.title = "renamed".to_string();
+        tray.apply(TrayEvent::Updated(Box::new(same)));
+        assert!(tray.stale_icons.is_empty(), "an unchanged icon must not re-upload");
+
+        let mut repainted = first.clone();
+        repainted.pixmap = Some(TrayPixmap { width: 1, height: 1, bgra: vec![9, 9, 9, 9] });
+        tray.apply(TrayEvent::Updated(Box::new(repainted)));
+        assert_eq!(tray.stale_icons, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn a_change_signal_refreshes_by_unique_name_or_well_known_name() {
+        let mut tray = Tray::default();
+        let mut tracked = item("k", TrayStatus::Active);
+        tracked.bus = "org.kde.StatusNotifierItem-9-1".to_string();
+        tracked.owner = Some(":1.4".to_string());
+        tray.apply(TrayEvent::Updated(Box::new(tracked)));
+
+        assert!(
+            tray.apply(TrayEvent::Changed(":1.4".to_string())).is_some(),
+            "a signal arrives from the unique name, not the well-known one",
+        );
+        assert!(
+            tray.apply(TrayEvent::Changed("org.kde.StatusNotifierItem-9-1".to_string())).is_some()
+        );
+        assert!(tray.apply(TrayEvent::Changed(":1.99".to_string())).is_none());
     }
 
     #[test]

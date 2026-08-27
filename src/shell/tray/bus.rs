@@ -6,7 +6,8 @@ use zbus::fdo::{DBusProxy, RequestNameFlags, RequestNameReply};
 use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedObjectPath;
-use zbus::{Connection, connection, interface, proxy};
+use zbus::message::Type as MessageType;
+use zbus::{Connection, MatchRule, MessageStream, connection, interface, proxy};
 
 use super::{TrayEvent, TrayItem, TrayPixmap, TrayRequest, TrayRole, TrayStatus};
 
@@ -271,6 +272,12 @@ async fn watch_items(connection: &Connection, events: Sender<TrayEvent>) -> zbus
         }
     }
 
+    let item_signals = MatchRule::builder()
+        .msg_type(MessageType::Signal)
+        .interface("org.kde.StatusNotifierItem")?
+        .build();
+    let mut changes = MessageStream::for_match_rule(item_signals, connection, None).await?;
+
     let mut registered = watcher.receive_status_notifier_item_registered().await?;
     let mut unregistered = watcher.receive_status_notifier_item_unregistered().await?;
     let mut owner_changed = DBusProxy::new(connection)
@@ -292,6 +299,13 @@ async fn watch_items(connection: &Connection, events: Sender<TrayEvent>) -> zbus
                 let Some(signal) = signal else { break };
                 if let Ok(args) = signal.args() {
                     let _ = events.send(TrayEvent::Removed(args.service.to_string()));
+                }
+            }
+            message = changes.next() => {
+                let Some(Ok(message)) = message else { break };
+                let sender = message.header().sender().map(|s| s.to_string());
+                if let Some(sender) = sender {
+                    let _ = events.send(TrayEvent::Changed(sender));
                 }
             }
             signal = owner_changed.next() => {
@@ -375,9 +389,18 @@ pub async fn read_item(
         tracing::info!("no drawable icon for {icon_name:?}; the item is tracked but not shown");
     }
 
+    let owner = match DBusProxy::new(connection).await {
+        Ok(dbus) => match bus.try_into() {
+            Ok(name) => dbus.get_name_owner(name).await.ok().map(|n| n.to_string()),
+            Err(_) => None,
+        },
+        Err(_) => None,
+    };
+
     Ok(TrayItem {
         key: format!("{bus}{path}"),
         bus: bus.to_string(),
+        owner,
         path: path.to_string(),
         id: proxy.id().await.unwrap_or_default(),
         title: proxy.title().await.unwrap_or_default(),
