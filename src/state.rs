@@ -16,7 +16,10 @@ use crate::input::drag::{Drag, Navigate};
 use crate::renderer::WgpuState;
 use crate::shell::orb::OrbRuntime;
 use crate::shell::module::{ModuleId, ModuleState};
+use crate::shell::audio::init_audio;
+use crate::shell::bluetooth::init_bluetooth;
 use crate::shell::network::init_network;
+use crate::shell::power::init_power;
 use crate::shell::tray::{Tray, init_tray};
 use crate::scene::WORLD_SCALE;
 use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete, Physics, Tween};
@@ -98,6 +101,9 @@ pub struct SpatilState {
     pub tray: Tray,
     pub module_slots: Vec<(ModuleId, [f32; 4])>,
     pub network: Option<ModuleState>,
+    pub battery: Option<ModuleState>,
+    pub bluetooth: Option<ModuleState>,
+    pub audio: Option<ModuleState>,
     pub cursor_hidden: bool,
     window_id_counter: u32,
 }
@@ -258,6 +264,9 @@ impl SpatilState {
             tray: Tray::default(),
             module_slots: Vec::new(),
             network: None,
+            battery: None,
+            bluetooth: None,
+            audio: None,
             cursor_hidden: false,
             window_id_counter: 1,
         };
@@ -265,6 +274,9 @@ impl SpatilState {
         let tray_requests = init_tray(&state.loop_handle);
         state.tray.attach(tray_requests);
         init_network(&state.loop_handle);
+        init_power(&state.loop_handle);
+        init_bluetooth(&state.loop_handle);
+        init_audio(&state.loop_handle);
         state
     }
 

@@ -1,5 +1,9 @@
+pub mod audio;
+pub mod bluetooth;
+pub mod launch;
 pub mod module;
 pub mod network;
+pub mod power;
 pub mod orb;
 pub mod tray;
 

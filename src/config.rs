@@ -44,6 +44,16 @@ pub struct Shell {
     pub familiar_accent: String,
     pub idle_ms: u64,
     pub icon_theme: String,
+    pub commands: Commands,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Commands {
+    pub network: String,
+    pub bluetooth: String,
+    pub audio: String,
+    pub battery: String,
 }
 
 impl Default for Shell {
@@ -57,6 +67,7 @@ impl Default for Shell {
             familiar_accent: "#4A90E2".to_string(),
             idle_ms: 5000,
             icon_theme: String::new(),
+            commands: Commands::default(),
         }
     }
 }

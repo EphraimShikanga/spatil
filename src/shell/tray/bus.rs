@@ -7,7 +7,7 @@ use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedObjectPath;
 use zbus::message::Type as MessageType;
-use zbus::{Connection, MatchRule, MessageStream, connection, interface, proxy};
+use zbus::{Connection, MatchRule, MessageStream, interface, proxy};
 
 use super::{TrayEvent, TrayItem, TrayPixmap, TrayRequest, TrayRole, TrayStatus};
 

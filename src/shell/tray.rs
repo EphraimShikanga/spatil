@@ -9,6 +9,7 @@ use smithay::reexports::calloop::channel::{Event, channel as calloop_channel};
 use smithay::utils::{Logical, Point};
 
 use crate::input::drag::{BTN_MIDDLE, BTN_RIGHT};
+use crate::renderer::gauge::{GAUGE_PAD, GaugeInstance};
 use crate::renderer::hud::TrayQuad;
 use crate::shell::module::{self, ModuleAction, ModuleId, ModuleState};
 use crate::renderer::orb::Corner;
@@ -307,7 +308,16 @@ pub fn init_tray(loop_handle: &LoopHandle<'static, SpatilState>) -> Option<StdSe
 
 impl SpatilState {
     pub fn shell_modules(&self) -> Vec<ModuleState> {
-        let mut modules: Vec<ModuleState> = self.network.iter().cloned().collect();
+        let mut modules: Vec<ModuleState> = [
+            self.network.as_ref(),
+            self.bluetooth.as_ref(),
+            self.audio.as_ref(),
+            self.battery.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect();
         modules.extend(
             self.tray
             .visible_items()
@@ -345,11 +355,13 @@ impl SpatilState {
 
         if open <= 0.002 {
             self.wgpu_state.tray_layout.clear();
+            self.wgpu_state.gauges.clear();
             self.module_slots.clear();
             return;
         }
         let Some(rect) = self.orb_rect() else {
             self.wgpu_state.tray_layout.clear();
+            self.wgpu_state.gauges.clear();
             self.module_slots.clear();
             return;
         };
@@ -364,10 +376,10 @@ impl SpatilState {
             self.wgpu_state.upload_tray_icon(key, w, h, &bgra);
         }
 
-        let drawable: Vec<ModuleId> = modules
+        let drawable: Vec<(ModuleId, Option<f32>, bool)> = modules
             .into_iter()
             .filter(|m| m.drawable())
-            .map(|m| m.id)
+            .map(|m| (m.id, m.level, m.urgent))
             .collect();
 
         let radius = rect.size.w as f32 * 0.5;
@@ -375,11 +387,12 @@ impl SpatilState {
         let slots = tray_slots(self.orb_corner(), centre, radius, drawable.len());
 
         self.module_slots.clear();
+        let mut gauges = Vec::new();
         self.wgpu_state.tray_layout = drawable
             .into_iter()
             .zip(slots)
             .enumerate()
-            .filter_map(|(i, (id, slot))| {
+            .filter_map(|(i, ((id, level, urgent), slot))| {
                 let reveal = stagger(open, i);
                 if reveal <= 0.002 {
                     return None;
@@ -392,9 +405,22 @@ impl SpatilState {
                     size,
                 ];
                 self.module_slots.push((id.clone(), rect));
+                if let Some(level) = level {
+                    let ring = size * GAUGE_PAD;
+                    gauges.push(GaugeInstance {
+                        rect: [
+                            slot.centre.0 - ring * 0.5,
+                            slot.centre.1 - ring * 0.5,
+                            ring,
+                            ring,
+                        ],
+                        params: [level, reveal, urgent as u8 as f32, 0.0],
+                    });
+                }
                 Some(TrayQuad { key: id.key(), rect, alpha: reveal })
             })
             .collect();
+        self.wgpu_state.gauges = gauges;
     }
 
     pub fn module_at(&self, point: Point<f64, Logical>) -> Option<ModuleId> {
@@ -422,7 +448,12 @@ impl SpatilState {
         point: Point<f64, Logical>,
     ) -> bool {
         let ModuleId::Tray(key) = id else {
-            tracing::debug!("no handler yet for the {:?} module", id);
+            if action == ModuleAction::Activate || action == ModuleAction::Context {
+                match crate::shell::launch::resolve(id, &self.config.shell) {
+                    Some(command) => crate::shell::launch::spawn(&command),
+                    None => tracing::warn!("{}", crate::shell::launch::describe_missing(id)),
+                }
+            }
             return true;
         };
         let Some((bus, path)) = self.tray_address(key) else {

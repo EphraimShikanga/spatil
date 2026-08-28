@@ -1,6 +1,7 @@
 pub mod backdrop;
 pub mod cursor;
 pub mod dmabuf;
+pub mod gauge;
 pub mod grid;
 pub mod hud;
 pub mod orb;
@@ -28,6 +29,7 @@ use crate::scene::mode::{self, AetherView, SceneMode};
 use crate::scene::systems::update_world_matrices;
 
 use backdrop::{BackdropPipeline, BackdropUniform};
+use gauge::{GaugeInstance, GaugePipeline, GaugeUniform};
 use grid::{GridPipeline, GridUniform};
 use cursor::{CursorFrame, CursorPipeline, CursorUniform};
 use hud::{HudPipeline, HudQuad, TrayQuad, hud_mvp};
@@ -135,6 +137,8 @@ pub struct WgpuState {
     pub cursor_frame: Option<CursorFrame>,
     pub tray_icons: HashMap<String, TexturedQuad>,
     pub tray_layout: Vec<TrayQuad>,
+    pub gauge_pipeline: GaugePipeline,
+    pub gauges: Vec<GaugeInstance>,
     pub camera: Camera,
     pub camera_controller: CameraController,
     pub scene_mode: SceneMode,
@@ -238,6 +242,7 @@ impl WgpuState {
         let hud_pipeline = HudPipeline::new(&device, format, &quad_pipeline.bind_group_layout);
         let orb_pipeline = OrbPipeline::new(&device, format);
         let cursor_pipeline = CursorPipeline::new(&device, format);
+        let gauge_pipeline = GaugePipeline::new(&device, format);
         let particle_positions = particles::generate_particles(
             aether.particle_count,
             aether.field[0],
@@ -284,6 +289,8 @@ impl WgpuState {
             cursor_frame: None,
             tray_icons: HashMap::new(),
             tray_layout: Vec::new(),
+            gauge_pipeline,
+            gauges: Vec::new(),
             camera,
             camera_controller: CameraController::default(),
             scene_mode,
@@ -693,6 +700,23 @@ impl WgpuState {
             tray_list.push((quad, entry.alpha));
         }
 
+        if !self.gauges.is_empty() {
+            let accent = self.orb.accent_color;
+            self.queue.write_buffer(
+                &self.gauge_pipeline.uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[GaugeUniform {
+                    screen: [screen_w, screen_h, 0.0, 0.0],
+                    track: [accent[0], accent[1], accent[2], 0.18],
+                    fill: accent,
+                    urgent: [0.85, 0.24, 0.24, 1.0],
+                }]),
+            );
+            let gauges = std::mem::take(&mut self.gauges);
+            self.gauge_pipeline.upload(&self.device, &self.queue, &gauges);
+            self.gauges = gauges;
+        }
+
         if let Some(frame) = &self.cursor_frame {
             self.queue.write_buffer(
                 &self.cursor_pipeline.uniform_buffer,
@@ -915,6 +939,13 @@ impl WgpuState {
                 }
             }
 
+            if !self.gauges.is_empty() {
+                render_pass.set_pipeline(&self.gauge_pipeline.pipeline);
+                render_pass.set_bind_group(0, &self.gauge_pipeline.uniform_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.gauge_pipeline.instances.slice(..));
+                render_pass.draw(0..6, 0..self.gauges.len() as u32);
+            }
+
             if self.cursor_frame.is_some() {
                 render_pass.set_pipeline(&self.cursor_pipeline.pipeline);
                 render_pass.set_bind_group(0, &self.cursor_pipeline.uniform_bind_group, &[]);
@@ -950,5 +981,6 @@ mod shader_tests {
         validate("shadow.wgsl", include_str!("shaders/shadow.wgsl"));
         validate("orb.wgsl", include_str!("shaders/orb.wgsl"));
         validate("cursor.wgsl", include_str!("shaders/cursor.wgsl"));
+        validate("gauge.wgsl", include_str!("shaders/gauge.wgsl"));
     }
 }

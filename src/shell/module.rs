@@ -22,10 +22,6 @@ impl ModuleId {
         }
     }
 
-    pub fn is_tray(&self) -> bool {
-        matches!(self, Self::Tray(_))
-    }
-
     pub fn rank(&self) -> u8 {
         match self {
             Self::Network => 0,

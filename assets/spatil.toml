@@ -190,6 +190,17 @@ idle_ms = 5000                    # stillness before the orb goes ambient
 icon_theme = ""                   # tray icon theme; empty = follow your GTK setting,
                                   # then fall back to Adwaita / breeze / Papirus / hicolor
 
+# Clicking a native module (wifi, bluetooth, volume, battery) opens the control
+# application you already have installed -- Spatil does not reimplement them.
+# Leave a value empty to let Spatil pick the first of its defaults that is on your
+# PATH; set one to force a particular tool. If nothing is found the log names what
+# you could install.
+[shell.commands]
+network = ""                      # default: nm-connection-editor
+bluetooth = ""                    # default: blueman-manager, overskride, blueberry
+audio = ""                        # default: pwvucontrol, pavucontrol
+battery = ""                      # default: gnome-power-statistics
+
 # Autostart: commands run once when Spatil starts, via `sh -c`. The working
 # directory is this config dir, so a relative path like "hooks/auto_place.py"
 # resolves to ~/.config/spatil/hooks/auto_place.py (scripts must be executable).
