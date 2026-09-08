@@ -17,6 +17,8 @@ pub const BTN_MIDDLE: u32 = 0x112;
 /// How far toward the camera a grabbed window lifts, in world units.
 const HOVER_LIFT: f32 = 0.06;
 
+const CENTRE_LIFT: f32 = 0.2;
+
 /// Anything faster is a stalled frame, not intent.
 const MAX_THROW_SPEED: f32 = 12.0;
 
@@ -273,6 +275,11 @@ impl SpatilState {
     fn fly_to_cursor(&mut self) {
         let point = self.cursor_pivot();
         self.wgpu_state.camera_controller.look_at(point);
+    }
+
+    pub fn centre_spawn_point(&self) -> Vector3<f32> {
+        let camera = &self.wgpu_state.camera;
+        camera.target.to_vec() - camera.forward() * CENTRE_LIFT
     }
 
     pub fn cursor_spawn_point(&self) -> Option<Vector3<f32>> {

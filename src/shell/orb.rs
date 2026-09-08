@@ -346,6 +346,10 @@ impl SpatilState {
         dx * dx + dy * dy <= radius * radius
     }
 
+    pub fn close_orb(&mut self) {
+        self.orb.expanded = false;
+    }
+
     pub fn set_orb_hover(&mut self, hovered: bool) {
         self.orb.hovered = hovered;
     }

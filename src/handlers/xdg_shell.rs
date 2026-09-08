@@ -40,7 +40,12 @@ impl XdgShellHandler for SpatilState {
         let mode = self.config.scene_graph.scene_mode();
         let facing = self.wgpu_state.facing_rotation(mode);
         let mut transform = default_transform(mode, window_id, &self.config.scene_graph, facing);
-        if let Some(spawn) = self.cursor_spawn_point() {
+        let spawn = if self.take_centred_window() {
+            Some(self.centre_spawn_point())
+        } else {
+            self.cursor_spawn_point()
+        };
+        if let Some(spawn) = spawn {
             transform.translation = spawn;
         }
         let entity = self.world.spawn((

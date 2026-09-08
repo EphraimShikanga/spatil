@@ -450,7 +450,12 @@ impl SpatilState {
         let ModuleId::Tray(key) = id else {
             if action == ModuleAction::Activate || action == ModuleAction::Context {
                 match crate::shell::launch::resolve(id, &self.config.shell) {
-                    Some(command) => crate::shell::launch::spawn(&command),
+                    Some(command) => {
+                        if crate::shell::launch::spawn(&command) {
+                            self.expect_centred_window();
+                            self.close_orb();
+                        }
+                    }
                     None => tracing::warn!("{}", crate::shell::launch::describe_missing(id)),
                 }
             }

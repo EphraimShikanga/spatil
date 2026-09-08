@@ -54,10 +54,16 @@ pub fn resolve(id: &ModuleId, shell: &Shell) -> Option<String> {
         .map(|command| command.to_string())
 }
 
-pub fn spawn(command: &str) {
+pub fn spawn(command: &str) -> bool {
     match std::process::Command::new("sh").arg("-c").arg(command).spawn() {
-        Ok(_) => tracing::info!("familiar launched {command:?}"),
-        Err(err) => tracing::warn!("could not launch {command:?}: {err}"),
+        Ok(_) => {
+            tracing::info!("familiar launched {command:?}");
+            true
+        }
+        Err(err) => {
+            tracing::warn!("could not launch {command:?}: {err}");
+            false
+        }
     }
 }
 

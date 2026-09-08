@@ -57,6 +57,39 @@ fn component_ratio(target: Vector3<f32>, current: Vector3<f32>) -> Vector3<f32> 
     )
 }
 
+const CENTRED_WINDOW_GRACE: Duration = Duration::from_secs(20);
+
+#[derive(Debug)]
+pub struct CentredWindows {
+    pending: u32,
+    until: Instant,
+}
+
+impl Default for CentredWindows {
+    fn default() -> Self {
+        Self { pending: 0, until: Instant::now() }
+    }
+}
+
+impl CentredWindows {
+    fn expect(&mut self, now: Instant, grace: Duration) {
+        self.pending = self.pending.saturating_add(1);
+        self.until = now + grace;
+    }
+
+    fn take(&mut self, now: Instant) -> bool {
+        if self.pending == 0 {
+            return false;
+        }
+        if now > self.until {
+            self.pending = 0;
+            return false;
+        }
+        self.pending -= 1;
+        true
+    }
+}
+
 fn env_flag(name: &str) -> bool {
     std::env::var(name).ok().is_some_and(|v| {
         matches!(
@@ -105,6 +138,7 @@ pub struct SpatilState {
     pub bluetooth: Option<ModuleState>,
     pub audio: Option<ModuleState>,
     pub cursor_hidden: bool,
+    centred: CentredWindows,
     window_id_counter: u32,
 }
 
@@ -268,6 +302,7 @@ impl SpatilState {
             bluetooth: None,
             audio: None,
             cursor_hidden: false,
+            centred: CentredWindows::default(),
             window_id_counter: 1,
         };
         state.restore_orb_corner(&SessionState::load());
@@ -373,6 +408,14 @@ impl SpatilState {
         let dt = (now - self.last_frame).as_secs_f32() * 1000.0;
         self.last_frame = now;
         dt
+    }
+
+    pub fn expect_centred_window(&mut self) {
+        self.centred.expect(Instant::now(), CENTRED_WINDOW_GRACE);
+    }
+
+    pub fn take_centred_window(&mut self) -> bool {
+        self.centred.take(Instant::now())
     }
 
     pub fn next_window_id(&mut self) -> u32 {
@@ -625,5 +668,43 @@ impl SpatilState {
         let mut placement = Placement::default();
         placement.set(mode, snapshot);
         let _ = self.world.insert_one(entity, placement);
+    }
+}
+
+
+#[cfg(test)]
+mod centred_tests {
+    use super::*;
+
+    #[test]
+    fn a_launch_claims_the_centre_for_exactly_one_window() {
+        let now = Instant::now();
+        let mut centred = CentredWindows::default();
+        assert!(!centred.take(now), "nothing was launched");
+
+        centred.expect(now, CENTRED_WINDOW_GRACE);
+        assert!(centred.take(now), "the launched window takes the centre");
+        assert!(!centred.take(now), "a second window it opens does not");
+    }
+
+    #[test]
+    fn two_launches_claim_two_windows() {
+        let now = Instant::now();
+        let mut centred = CentredWindows::default();
+        centred.expect(now, CENTRED_WINDOW_GRACE);
+        centred.expect(now, CENTRED_WINDOW_GRACE);
+        assert!(centred.take(now));
+        assert!(centred.take(now));
+        assert!(!centred.take(now));
+    }
+
+    #[test]
+    fn an_application_that_never_appears_releases_its_claim() {
+        let now = Instant::now();
+        let mut centred = CentredWindows::default();
+        centred.expect(now, Duration::from_millis(1));
+        let later = now + Duration::from_secs(60);
+        assert!(!centred.take(later), "a window opened much later is the user's, not ours");
+        assert!(!centred.take(now), "the stale claim is dropped, not just skipped");
     }
 }
