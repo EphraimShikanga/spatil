@@ -525,12 +525,13 @@ impl WgpuState {
 
         // A fullscreen window is the whole picture: the world behind is not dimmed,
         // it is not drawn.
-        let raised: Option<(hecs::Entity, WindowState)> = world
+        let raised: HashMap<hecs::Entity, WindowState> = world
             .query::<(&Presentation, &WaylandSurface)>()
             .iter()
-            .find(|(_, (p, s))| p.state != WindowState::Ambient && s.visible)
-            .map(|(entity, (p, _))| (entity, p.state));
-        let world_hidden = matches!(raised, Some((_, WindowState::Fullscreen)));
+            .filter(|(_, (p, s))| p.state != WindowState::Ambient && s.visible)
+            .map(|(entity, (p, _))| (entity, p.state))
+            .collect();
+        let world_hidden = raised.values().any(|s| *s == WindowState::Fullscreen);
         let depth_key: HashMap<hecs::Entity, f32> = world
             .query::<&Transform>()
             .iter()
@@ -571,9 +572,7 @@ impl WgpuState {
                 continue;
             }
             let state = match popup {
-                Some(popup) => raised
-                    .filter(|(raised, _)| *raised == popup.root)
-                    .map_or(WindowState::Ambient, |(_, state)| state),
+                Some(popup) => raised.get(&popup.root).copied().unwrap_or(WindowState::Ambient),
                 None => presentation.map_or(WindowState::Ambient, |p| p.state),
             };
             let modal = state != WindowState::Ambient;

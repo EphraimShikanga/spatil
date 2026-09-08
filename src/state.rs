@@ -23,7 +23,7 @@ use crate::shell::power::init_power;
 use crate::shell::tray::{Tray, init_tray};
 use crate::scene::WORLD_SCALE;
 use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete, Physics, Tween};
-use crate::scene::components::{Billboard, Placement, Popup, Transform, WaylandSurface};
+use crate::scene::components::{Billboard, Placement, Popup, Spotlight, Transform, WaylandSurface, WindowState};
 use crate::scene::mode::{SceneMode, default_transform};
 use crate::scene::systems::update_map_visibility;
 use smithay::backend::allocator::{Format, Fourcc};
@@ -374,8 +374,23 @@ impl SpatilState {
         }
     }
 
+    fn raise_pending_spotlights(&mut self) {
+        let ready: Vec<hecs::Entity> = self
+            .world
+            .query::<(&Spotlight, &WaylandSurface)>()
+            .iter()
+            .filter(|(_, (_, surface))| surface.visible && surface.size.1 > 0)
+            .map(|(entity, _)| entity)
+            .collect();
+        for entity in ready {
+            let _ = self.world.remove_one::<Spotlight>(entity);
+            self.raise_window(entity, WindowState::Spotlit);
+        }
+    }
+
     pub fn tick_animations(&mut self, dt_ms: f32) {
         self.popups.cleanup();
+        self.raise_pending_spotlights();
         self.update_hud_layout();
         let dt_ms = dt_ms.min(50.0);
         for id in animation::update(&mut self.world, dt_ms) {
@@ -391,7 +406,7 @@ impl SpatilState {
         // Derived, not latched: a Presented window that is *closed* rather than
         // dismissed would otherwise leave the parallax frozen for good.
         self.wgpu_state.parallax_frozen =
-            self.drag.is_some() || self.navigate.is_some() || self.world_is_modal();
+            self.drag.is_some() || self.navigate.is_some() || self.anything_raised();
     }
 
     fn physics(&self) -> Physics {
@@ -631,7 +646,8 @@ impl SpatilState {
     }
 
     pub fn apply_billboards(&mut self, mode: SceneMode) {
-        let raised = self.modal_window().map(|(entity, _)| entity);
+        let mut raised = self.spotlit_windows();
+        raised.extend(self.modal_window().map(|(entity, _)| entity));
         let entities: Vec<_> = self
             .world
             .query::<(&WaylandSurface, Option<&Popup>)>()
@@ -640,7 +656,7 @@ impl SpatilState {
             .map(|(entity, _)| entity)
             .collect();
         for entity in entities {
-            if mode == SceneMode::Aether && Some(entity) != raised {
+            if mode == SceneMode::Aether && !raised.contains(&entity) {
                 let _ = self.world.insert_one(entity, Billboard);
             } else {
                 let _ = self.world.remove_one::<Billboard>(entity);

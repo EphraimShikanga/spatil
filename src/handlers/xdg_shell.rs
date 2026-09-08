@@ -15,7 +15,7 @@ use smithay::wayland::shell::xdg::{
 
 use crate::state::SpatilState;
 use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete};
-use crate::scene::components::{Billboard, Transform, WaylandSurface, WindowState};
+use crate::scene::components::{Billboard, Spotlight, Transform, WaylandSurface, WindowState};
 use crate::scene::mode::{SceneMode, default_transform};
 
 impl XdgShellHandler for SpatilState {
@@ -40,7 +40,8 @@ impl XdgShellHandler for SpatilState {
         let mode = self.config.scene_graph.scene_mode();
         let facing = self.wgpu_state.facing_rotation(mode);
         let mut transform = default_transform(mode, window_id, &self.config.scene_graph, facing);
-        let spawn = if self.take_centred_window() {
+        let centred = self.take_centred_window();
+        let spawn = if centred {
             Some(self.centre_spawn_point())
         } else {
             self.cursor_spawn_point()
@@ -54,6 +55,9 @@ impl XdgShellHandler for SpatilState {
         ));
         if mode == SceneMode::Aether {
             let _ = self.world.insert_one(entity, Billboard);
+        }
+        if centred {
+            let _ = self.world.insert_one(entity, Spotlight);
         }
 
         if let Some(keyboard) = self.seat.get_keyboard() {

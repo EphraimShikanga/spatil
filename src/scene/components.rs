@@ -74,9 +74,12 @@ impl Placement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowState {
     Ambient,
+    Spotlit,
     Presented,
     Fullscreen,
 }
+
+pub struct Spotlight;
 
 pub struct Presentation {
     pub state: WindowState,

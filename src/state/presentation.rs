@@ -40,8 +40,23 @@ impl SpatilState {
         self.world
             .query::<(&Presentation, &WaylandSurface)>()
             .iter()
-            .find(|(_, (p, s))| p.state != WindowState::Ambient && !s.closing)
+            .find(|(_, (p, s))| {
+                matches!(p.state, WindowState::Presented | WindowState::Fullscreen) && !s.closing
+            })
             .map(|(entity, (p, _))| (entity, p.state))
+    }
+
+    pub fn spotlit_windows(&self) -> Vec<Entity> {
+        self.world
+            .query::<(&Presentation, &WaylandSurface)>()
+            .iter()
+            .filter(|(_, (p, s))| p.state == WindowState::Spotlit && !s.closing)
+            .map(|(entity, _)| entity)
+            .collect()
+    }
+
+    pub fn anything_raised(&self) -> bool {
+        self.modal_window().is_some() || !self.spotlit_windows().is_empty()
     }
 
     pub fn toggle_present(&mut self) {
@@ -91,7 +106,9 @@ impl SpatilState {
         let Some(surface) = self.toplevel_for(entity) else {
             return;
         };
-        if let Some((other, _)) = self.modal_window()
+        let spotlight = target == WindowState::Spotlit;
+        if !spotlight
+            && let Some((other, _)) = self.modal_window()
             && other != entity
         {
             self.return_to_ambient(other);
@@ -108,25 +125,32 @@ impl SpatilState {
             }
         };
 
-        let (width, height) = self.raised_size(target);
-        let fullscreen = target == WindowState::Fullscreen;
-        surface.with_pending_state(|state| {
-            state.size = Some((width, height).into());
-            if fullscreen {
-                state.states.set(xdg_toplevel::State::Fullscreen);
-            } else {
-                state.states.unset(xdg_toplevel::State::Fullscreen);
-            }
-        });
-        surface.send_configure();
+        let height = if spotlight {
+            self.natural_height(entity)
+        } else {
+            let (width, height) = self.raised_size(target);
+            let fullscreen = target == WindowState::Fullscreen;
+            surface.with_pending_state(|state| {
+                state.size = Some((width, height).into());
+                if fullscreen {
+                    state.states.set(xdg_toplevel::State::Fullscreen);
+                } else {
+                    state.states.unset(xdg_toplevel::State::Fullscreen);
+                }
+            });
+            surface.send_configure();
+            height
+        };
 
         let _ = self.world.insert_one(
             entity,
             Presentation { state: target, ambient, ambient_size },
         );
-        // The world behind is modal; further drags are refused by `world_is_modal`.
-        self.drag = None;
-        self.navigate = None;
+        if !spotlight {
+            // The world behind is modal; further drags are refused by `world_is_modal`.
+            self.drag = None;
+            self.navigate = None;
+        }
         self.focus_entity(entity);
 
         let end = self.raised_snapshot(entity, target, height);
@@ -144,7 +168,9 @@ impl SpatilState {
             return;
         }
 
-        if let Some(surface) = self.toplevel_for(entity) {
+        if state != WindowState::Spotlit
+            && let Some(surface) = self.toplevel_for(entity)
+        {
             surface.with_pending_state(|state| {
                 state.size = Some(ambient_size.into());
                 state.states.unset(xdg_toplevel::State::Fullscreen);
@@ -157,14 +183,30 @@ impl SpatilState {
     }
 
     pub fn dismiss_on_backdrop(&mut self, hit: Option<Entity>) -> bool {
+        let window = hit.map(|entity| self.window_entity(entity));
+        let mut dismissed = false;
+        for entity in self.spotlit_windows() {
+            if window != Some(entity) {
+                self.return_to_ambient(entity);
+                dismissed = true;
+            }
+        }
         let Some((raised, _)) = self.modal_window() else {
-            return false;
+            return dismissed;
         };
-        if hit.map(|entity| self.window_entity(entity)) == Some(raised) {
-            return false;
+        if window == Some(raised) {
+            return dismissed;
         }
         self.return_to_ambient(raised);
         true
+    }
+
+    fn natural_height(&self, entity: Entity) -> i32 {
+        self.world
+            .get::<&WaylandSurface>(entity)
+            .map(|s| s.size.1 as i32)
+            .unwrap_or(0)
+            .max(1)
     }
 
     fn raised_size(&self, target: WindowState) -> (i32, i32) {
@@ -180,6 +222,7 @@ impl SpatilState {
         let mode = self.config.scene_graph.scene_mode();
         let fill = match target {
             WindowState::Fullscreen => 1.0,
+            WindowState::Spotlit => self.config.shell.spotlight_fill.clamp(0.1, 1.0),
             _ => self.config.input.present_fill.clamp(0.1, 1.0),
         };
         let height = height_px as f32 / WORLD_SCALE;
@@ -259,10 +302,8 @@ impl SpatilState {
     }
 
     pub fn tick_backdrop(&mut self, dt_ms: f32) {
-        let target = match self.modal_window() {
-            Some((_, WindowState::Presented)) => 1.0,
-            _ => 0.0,
-        };
+        let presented = matches!(self.modal_window(), Some((_, WindowState::Presented)));
+        let target = if presented || !self.spotlit_windows().is_empty() { 1.0 } else { 0.0 };
         if !self.config.animation.enabled {
             self.wgpu_state.backdrop_dim = target;
             return;
@@ -274,5 +315,22 @@ impl SpatilState {
         } else {
             (current - step).max(target)
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::scene::components::WindowState;
+
+    #[test]
+    fn only_present_and_fullscreen_occupy_the_exclusive_slot() {
+        let exclusive = |state| matches!(state, WindowState::Presented | WindowState::Fullscreen);
+        assert!(exclusive(WindowState::Presented));
+        assert!(exclusive(WindowState::Fullscreen));
+        assert!(
+            !exclusive(WindowState::Spotlit),
+            "a spotlight must not evict a presented window",
+        );
+        assert!(!exclusive(WindowState::Ambient));
     }
 }

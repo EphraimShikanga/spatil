@@ -44,6 +44,7 @@ pub struct Shell {
     pub familiar_accent: String,
     pub idle_ms: u64,
     pub icon_theme: String,
+    pub spotlight_fill: f32,
     pub commands: Commands,
 }
 
@@ -67,6 +68,7 @@ impl Default for Shell {
             familiar_accent: "#4A90E2".to_string(),
             idle_ms: 5000,
             icon_theme: String::new(),
+            spotlight_fill: 0.55,
             commands: Commands::default(),
         }
     }

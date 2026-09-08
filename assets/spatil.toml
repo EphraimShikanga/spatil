@@ -187,6 +187,10 @@ familiar_margin = 20              # inset from the screen corner in pixels
 familiar_color = "#12161C"        # orb body
 familiar_accent = "#4A90E2"       # hands, rim and the revolving second dot
 idle_ms = 5000                    # stillness before the orb goes ambient
+spotlight_fill = 0.55             # how much of the view a shell-launched window covers.
+                                  # Unlike "present" this never resizes the application --
+                                  # it keeps its own size and is simply placed where that
+                                  # size reads well, with the world dimmed behind it.
 icon_theme = ""                   # tray icon theme; empty = follow your GTK setting,
                                   # then fall back to Adwaita / breeze / Papirus / hicolor
 
