@@ -69,7 +69,7 @@ impl SpatilState {
     fn run_action(&mut self, action: Action) {
         match action {
             Action::Exec(cmd) => {
-                if let Err(err) = std::process::Command::new("sh").arg("-c").arg(&cmd).spawn() {
+                if let Err(err) = crate::shell::launch::shell_command(&cmd).spawn() {
                     tracing::warn!("failed to exec {cmd:?}: {err}");
                 }
             }
@@ -120,9 +120,7 @@ impl SpatilState {
             tracing::warn!("cannot run hook {spec:?}: no config dir");
             return;
         };
-        let spawn = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(spec)
+        let spawn = crate::shell::launch::shell_command(spec)
             .current_dir(&hooks_dir)
             .spawn();
         if let Err(err) = spawn {

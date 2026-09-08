@@ -38,6 +38,7 @@ use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufState};
 use smithay::wayland::output::OutputManagerState;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel, Scale};
+use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shell::xdg::{ToplevelSurface, XdgShellState};
 use smithay::wayland::shm::ShmState;
@@ -108,6 +109,7 @@ pub struct SpatilState {
     pub shm_state: ShmState,
     pub xdg_shell_state: XdgShellState,
     pub layer_shell_state: WlrLayerShellState,
+    pub data_device_state: DataDeviceState,
     pub xdg_activation_state: XdgActivationState,
     pub output_manager_state: OutputManagerState,
     pub dmabuf_state: DmabufState,
@@ -155,6 +157,7 @@ impl SpatilState {
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
+        let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&display_handle, "seat0");
         let xkb_config = XkbConfig {
@@ -272,6 +275,7 @@ impl SpatilState {
             shm_state,
             xdg_shell_state,
             layer_shell_state,
+            data_device_state,
             xdg_activation_state,
             output_manager_state,
             dmabuf_state,
@@ -442,8 +446,7 @@ impl SpatilState {
     pub fn run_autostart(&self) {
         let config_dir = SpatilConfig::config_dir();
         for entry in &self.config.autostart.exec {
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c").arg(entry);
+            let mut cmd = crate::shell::launch::shell_command(entry);
             if let Some(dir) = &config_dir {
                 cmd.current_dir(dir);
             }

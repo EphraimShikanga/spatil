@@ -1,8 +1,22 @@
+use std::os::unix::process::CommandExt;
 use std::path::Path;
+use std::process::Command;
 
 use crate::config::Shell;
 
 use super::module::ModuleId;
+
+pub fn shell_command(command: &str) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(command);
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGCHLD, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+    cmd
+}
 
 fn candidates(id: &ModuleId) -> &'static [&'static str] {
     match id {
@@ -55,7 +69,7 @@ pub fn resolve(id: &ModuleId, shell: &Shell) -> Option<String> {
 }
 
 pub fn spawn(command: &str) -> bool {
-    match std::process::Command::new("sh").arg("-c").arg(command).spawn() {
+    match shell_command(command).spawn() {
         Ok(_) => {
             tracing::info!("familiar launched {command:?}");
             true

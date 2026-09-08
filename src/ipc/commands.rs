@@ -38,6 +38,11 @@ impl SpatilState {
                     tracing::warn!(index, "tray_activate for an index with no visible item");
                 }
             }
+            "scene_state" => {
+                let event =
+                    super::protocol::SpatilEvent::with_data("scene_state", self.scene_report());
+                self.broadcast_event(&event);
+            }
             "tray_state" => {
                 let event = super::protocol::SpatilEvent::with_data("tray_state", self.tray_report());
                 self.broadcast_event(&event);

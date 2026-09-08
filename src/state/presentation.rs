@@ -184,21 +184,60 @@ impl SpatilState {
 
     pub fn dismiss_on_backdrop(&mut self, hit: Option<Entity>) -> bool {
         let window = hit.map(|entity| self.window_entity(entity));
-        let mut dismissed = false;
         for entity in self.spotlit_windows() {
             if window != Some(entity) {
                 self.return_to_ambient(entity);
-                dismissed = true;
             }
         }
         let Some((raised, _)) = self.modal_window() else {
-            return dismissed;
+            return false;
         };
         if window == Some(raised) {
-            return dismissed;
+            return false;
         }
         self.return_to_ambient(raised);
         true
+    }
+
+    pub fn scene_report(&self) -> serde_json::Value {
+        let pointer = self.pointer_location;
+        let hit = crate::input::raycast::raycast_entity(self, pointer);
+        let focus = self
+            .seat
+            .get_pointer()
+            .and_then(|p| p.current_focus())
+            .map(|s| format!("{:?}", s.id()));
+
+        let windows: Vec<serde_json::Value> = self
+            .world
+            .query::<(&Transform, &WaylandSurface)>()
+            .iter()
+            .map(|(entity, (transform, surface))| {
+                let state = self
+                    .world
+                    .get::<&Presentation>(entity)
+                    .map(|p| format!("{:?}", p.state))
+                    .unwrap_or_else(|_| "Ambient".to_string());
+                serde_json::json!({
+                    "entity": format!("{entity:?}"),
+                    "state": state,
+                    "visible": surface.visible,
+                    "closing": surface.closing,
+                    "size": [surface.size.0, surface.size.1],
+                    "at": [transform.translation.x, transform.translation.y, transform.translation.z],
+                })
+            })
+            .collect();
+
+        serde_json::json!({
+            "pointer": [pointer.x, pointer.y],
+            "pointer_focus": focus,
+            "under_cursor": hit.as_ref().map(|h| format!("{:?}", h.entity)),
+            "under_cursor_local": hit.as_ref().map(|h| [h.local_point.x, h.local_point.y]),
+            "spotlit": self.spotlit_windows().iter().map(|e| format!("{e:?}")).collect::<Vec<_>>(),
+            "modal": self.modal_window().map(|(e, s)| format!("{e:?} {s:?}")),
+            "windows": windows,
+        })
     }
 
     fn natural_height(&self, entity: Entity) -> i32 {
