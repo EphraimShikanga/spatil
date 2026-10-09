@@ -1,10 +1,12 @@
 pub mod audio;
 pub mod bluetooth;
 pub mod launch;
+pub mod menu;
 pub mod module;
 pub mod network;
 pub mod power;
 pub mod orb;
+pub mod tooltip;
 pub mod tray;
 
 use tray::TrayPixmap;

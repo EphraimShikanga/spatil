@@ -17,10 +17,14 @@ impl SpatilState {
         self.note_input();
         self.pointer_location = (x, y).into();
         self.pointer_moved = true;
-        let on_orb = self.orb_contains(self.pointer_location)
-            || self.orb_dragging()
-            || self.module_at(self.pointer_location).is_some();
+        if self.menu_is_open() {
+            self.menu_hover(self.pointer_location);
+        }
+        let hovered_module = self.module_at(self.pointer_location);
+        let on_orb =
+            self.orb_contains(self.pointer_location) || self.orb_dragging() || hovered_module.is_some();
         self.set_orb_hover(on_orb);
+        self.set_hovered_module(hovered_module);
         // NDC cursor for the Aether parallax camera (y up), in output pixel space.
         let (w, h) = (
             self.wgpu_state.width.max(1) as f64,
@@ -73,6 +77,18 @@ impl SpatilState {
 
     pub fn dispatch_pointer_button(&mut self, button_code: u32, button_state: ButtonState) {
         self.note_input();
+        if self.menu_is_open() {
+            if button_state == ButtonState::Pressed {
+                match self.menu_at(self.pointer_location) {
+                    Some(index) => self.menu_activate(index),
+                    None if !self.menu_contains(self.pointer_location) => {
+                        self.close_menu();
+                    }
+                    None => {}
+                }
+            }
+            return;
+        }
         if button_state == ButtonState::Released && self.orb_release() {
             return;
         }

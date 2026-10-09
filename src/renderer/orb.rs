@@ -39,6 +39,7 @@ pub struct OrbParams {
     pub size: f32,
     pub margin: f32,
     pub idle_ms: f32,
+    pub digits: bool,
     pub body_color: [f32; 4],
     pub accent_color: [f32; 4],
 }
@@ -58,6 +59,7 @@ impl OrbParams {
             size: shell.familiar_size.max(1.0),
             margin: shell.familiar_margin.max(0.0),
             idle_ms: shell.idle_ms as f32,
+            digits: shell.familiar_clock.eq_ignore_ascii_case("digital"),
             body_color: parse_hex_color(&shell.familiar_color),
             accent_color: parse_hex_color(&shell.familiar_accent),
         }
@@ -71,6 +73,7 @@ pub struct OrbFrame {
     pub hover: f32,
     pub ambient: f32,
     pub hand: f32,
+    pub dial: f32,
 }
 
 #[repr(C)]
@@ -85,7 +88,8 @@ pub struct OrbUniform {
     pub hover: f32,
     pub ambient: f32,
     pub hand: f32,
-    pub _pad: [f32; 3],
+    pub dial: f32,
+    pub _pad: [f32; 2],
 }
 
 pub struct OrbPipeline {

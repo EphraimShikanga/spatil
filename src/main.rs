@@ -7,6 +7,7 @@ mod renderer;
 mod scene;
 mod shell;
 mod state;
+mod text;
 
 use config::SpatilConfig;
 
@@ -36,6 +37,11 @@ fn main() {
         shell::tray::probe();
         return;
     }
+    if std::env::args().any(|a| a == "--font-probe") {
+        let config = SpatilConfig::load();
+        text::probe(&config.shell.font, config.shell.font_size);
+        return;
+    }
 
     let config = SpatilConfig::load();
 
@@ -47,6 +53,11 @@ fn main() {
             std::env::set_var("SPATIL_ICON_THEME", &config.shell.icon_theme);
         }
     }
+
+    let warm_started = std::time::Instant::now();
+    text::warm_fonts(move || {
+        tracing::info!("fonts ready in {:?}", warm_started.elapsed());
+    });
 
     backend::run(config);
 }

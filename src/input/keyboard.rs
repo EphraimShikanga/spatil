@@ -12,6 +12,11 @@ use crate::state::SpatilState;
 const ORBIT_STEP_PIXELS: f32 = 30.0;
 const TILT_STEP_DEGREES: f32 = 5.0;
 
+enum Handled {
+    Act(Action),
+    Menu(Keysym),
+}
+
 fn vt_switch_target(sym: Keysym) -> Option<i32> {
     let raw = sym.raw();
     (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12)
@@ -46,23 +51,30 @@ impl SpatilState {
         let time = self.input_time();
 
         // A bound press is intercepted (its action returned); releases forward.
-        let action = keyboard.input::<Action, _>(self, keycode, key_state, serial, time, |data, mods, handle| {
+        let handled = keyboard.input::<Handled, _>(self, keycode, key_state, serial, time, |data, mods, handle| {
             if key_state != KeyState::Pressed {
                 return FilterResult::Forward;
             }
             let sym = handle.modified_sym();
+            // An open menu grabs the keyboard outright, so arrow keys drive it
+            // instead of reaching whichever client still holds focus underneath.
+            if data.menu_is_open() {
+                return FilterResult::Intercept(Handled::Menu(sym));
+            }
             if let Some(vt) = vt_switch_target(sym) {
-                return FilterResult::Intercept(Action::ChangeVt(vt));
+                return FilterResult::Intercept(Handled::Act(Action::ChangeVt(vt)));
             }
             let combo = KeyCombo::from_state(mods, sym);
             match data.keybindings.get(&combo) {
-                Some(action) => FilterResult::Intercept(action.clone()),
+                Some(action) => FilterResult::Intercept(Handled::Act(action.clone())),
                 None => FilterResult::Forward,
             }
         });
 
-        if let Some(action) = action {
-            self.run_action(action);
+        match handled {
+            Some(Handled::Act(action)) => self.run_action(action),
+            Some(Handled::Menu(sym)) => self.menu_key(sym),
+            None => {}
         }
     }
 
@@ -96,6 +108,38 @@ impl SpatilState {
             }
             Action::Tilt(adjust) => self.tilt_windows(adjust.sign() * TILT_STEP_DEGREES),
             Action::OrbCorner(corner) => self.set_orb_corner(corner),
+        }
+    }
+
+    fn menu_key(&mut self, sym: Keysym) {
+        match sym.raw() {
+            keysyms::KEY_Escape => {
+                if !self.menu_back() {
+                    self.close_menu();
+                }
+            }
+            keysyms::KEY_Up | keysyms::KEY_ISO_Left_Tab => self.menu_step(-1),
+            keysyms::KEY_Down | keysyms::KEY_Tab => self.menu_step(1),
+            keysyms::KEY_Left => {
+                self.menu_back();
+            }
+            keysyms::KEY_Right => {
+                if let Some(index) = self.menu_highlighted() {
+                    self.menu_activate(index);
+                }
+            }
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter | keysyms::KEY_space => {
+                if let Some(index) = self.menu_highlighted() {
+                    self.menu_activate(index);
+                }
+            }
+            keysyms::KEY_Home => {
+                self.menu_home(false);
+            }
+            keysyms::KEY_End => {
+                self.menu_home(true);
+            }
+            _ => {}
         }
     }
 

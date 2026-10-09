@@ -43,6 +43,7 @@ zbus = "5"
 freedesktop-icons = "0.4"
 png = "0.18"
 resvg = { version = "0.45", default-features = false }
+cosmic-text = { version = "0.17.0", features = ["shape-run-cache"] }
 futures-util = "0.3"
 
 [dev-dependencies]

@@ -45,6 +45,9 @@ pub struct Shell {
     pub idle_ms: u64,
     pub icon_theme: String,
     pub spotlight_fill: f32,
+    pub font: String,
+    pub font_size: f32,
+    pub familiar_clock: String,
     pub commands: Commands,
 }
 
@@ -69,6 +72,9 @@ impl Default for Shell {
             idle_ms: 5000,
             icon_theme: String::new(),
             spotlight_fill: 0.55,
+            font: "sans-serif".to_string(),
+            font_size: 12.0,
+            familiar_clock: "analog".to_string(),
             commands: Commands::default(),
         }
     }

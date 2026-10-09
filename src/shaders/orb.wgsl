@@ -8,6 +8,7 @@ struct OrbUniform {
     hover: f32,
     ambient: f32,
     hand: f32,
+    dial: f32,
 };
 
 @group(0) @binding(0)
@@ -107,11 +108,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let hour_d = seg_dist(p, vec2<f32>(0.0, 0.0), hour * 0.42);
     let hour_m = 1.0 - smoothstep(0.038 - aa, 0.038 + aa, hour_d);
-    color = over(color, vec4<f32>(hands_rgb, hour_m * 0.95));
+    color = over(color, vec4<f32>(hands_rgb, hour_m * 0.95 * orb.dial));
 
     let min_d = seg_dist(p, vec2<f32>(0.0, 0.0), minute * 0.64);
     let min_m = 1.0 - smoothstep(0.027 - aa, 0.027 + aa, min_d);
-    color = over(color, vec4<f32>(hands_rgb, min_m * 0.95));
+    color = over(color, vec4<f32>(hands_rgb, min_m * 0.95 * orb.dial));
 
     if (orb.hand > 0.001) {
         let second = dial(TAU * fract(secs / 60.0));

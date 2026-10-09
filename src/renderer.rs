@@ -5,10 +5,12 @@ pub mod gauge;
 pub mod grid;
 pub mod hud;
 pub mod orb;
+pub mod panel;
 pub mod particles;
 pub mod pipeline;
 pub mod scene_params;
 pub mod shadow;
+pub mod text;
 pub mod texture;
 
 use std::collections::HashMap;
@@ -34,10 +36,12 @@ use grid::{GridPipeline, GridUniform};
 use cursor::{CursorFrame, CursorPipeline, CursorUniform};
 use hud::{HudPipeline, HudQuad, TrayQuad, hud_mvp};
 use orb::{OrbFrame, OrbParams, OrbPipeline, OrbUniform};
+use panel::{PanelInstance, PanelPipeline, PanelUniform};
 use particles::{ParticlePipeline, ParticleUniform};
 use pipeline::{Camera, OPENGL_TO_WGPU_MATRIX, QuadPipeline, QuadUniform};
 use scene_params::{AetherParams, InteractionParams, StrataParams};
 use shadow::{LightUniform, ShadowMap, ShadowPipeline};
+use text::{GlyphInstance, TextPipeline, TextRun, TextUniform};
 use texture::TexturedQuad;
 
 pub use dmabuf::{query_dmabuf_modifiers, query_render_modifiers};
@@ -139,6 +143,13 @@ pub struct WgpuState {
     pub tray_layout: Vec<TrayQuad>,
     pub gauge_pipeline: GaugePipeline,
     pub gauges: Vec<GaugeInstance>,
+    pub panel_pipeline: PanelPipeline,
+    pub panels: Vec<PanelInstance>,
+    pub text_pipeline: TextPipeline,
+    pub text_runs: Vec<TextRun>,
+    pub font: String,
+    text_glyphs: Vec<GlyphInstance>,
+    text_mask_count: u32,
     pub camera: Camera,
     pub camera_controller: CameraController,
     pub scene_mode: SceneMode,
@@ -243,6 +254,8 @@ impl WgpuState {
         let orb_pipeline = OrbPipeline::new(&device, format);
         let cursor_pipeline = CursorPipeline::new(&device, format);
         let gauge_pipeline = GaugePipeline::new(&device, format);
+        let text_pipeline = TextPipeline::new(&device, format);
+        let panel_pipeline = PanelPipeline::new(&device, format);
         let particle_positions = particles::generate_particles(
             aether.particle_count,
             aether.field[0],
@@ -291,6 +304,13 @@ impl WgpuState {
             tray_layout: Vec::new(),
             gauge_pipeline,
             gauges: Vec::new(),
+            panel_pipeline,
+            panels: Vec::new(),
+            text_pipeline,
+            text_runs: Vec::new(),
+            font: config.shell.font.clone(),
+            text_glyphs: Vec::new(),
+            text_mask_count: 0,
             camera,
             camera_controller: CameraController::default(),
             scene_mode,
@@ -398,6 +418,90 @@ impl WgpuState {
 
     pub fn remove_dmabuf_texture(&mut self, buffer_id: &ObjectId) {
         self.dmabuf_textures.remove(buffer_id);
+    }
+
+    fn build_text_glyphs(&mut self) {
+        self.text_glyphs.clear();
+        self.text_mask_count = 0;
+        if self.text_runs.is_empty() || !crate::text::fonts_ready() {
+            return;
+        }
+        let runs = std::mem::take(&mut self.text_runs);
+        for attempt in 0..2 {
+            let resets = self.text_pipeline.atlas.resets();
+            self.collect_glyphs(&runs);
+            // A reset mid-build repacks the atlas under UVs already collected,
+            // so the whole run has to be rebuilt against the cleared atlas.
+            if self.text_pipeline.atlas.resets() == resets {
+                break;
+            }
+            if attempt == 1 {
+                tracing::warn!("text exceeds the glyph atlas in a single frame; dropping it");
+                self.text_glyphs.clear();
+                self.text_mask_count = 0;
+            }
+        }
+        self.text_runs = runs;
+    }
+
+    fn collect_glyphs(&mut self, runs: &[TextRun]) {
+        let font = std::mem::take(&mut self.font);
+        let mut mask: Vec<GlyphInstance> = Vec::new();
+        let mut colored: Vec<GlyphInstance> = Vec::new();
+        for run in runs {
+            if run.text.is_empty() || run.color[3] <= 0.0 {
+                continue;
+            }
+            let shaped = crate::text::shape(&run.text, &font, run.size);
+            let origin_x = run.x.round();
+            let baseline = (run.y + shaped.ascent).round();
+            for glyph in &shaped.glyphs {
+                let Some(entry) = self.atlas_entry(glyph.key) else {
+                    continue;
+                };
+                let instance = GlyphInstance {
+                    rect: [
+                        origin_x + glyph.x as f32 + entry.left as f32,
+                        baseline + glyph.y as f32 - entry.top as f32,
+                        entry.width as f32,
+                        entry.height as f32,
+                    ],
+                    uv: entry.uv,
+                    color: if entry.color {
+                        [1.0, 1.0, 1.0, run.color[3]]
+                    } else {
+                        run.color
+                    },
+                };
+                if entry.color {
+                    colored.push(instance);
+                } else {
+                    mask.push(instance);
+                }
+            }
+        }
+        self.font = font;
+        self.text_mask_count = mask.len() as u32;
+        self.text_glyphs = mask;
+        self.text_glyphs.extend(colored);
+    }
+
+    fn atlas_entry(&mut self, key: cosmic_text::CacheKey) -> Option<text::AtlasEntry> {
+        if let Some(entry) = self.text_pipeline.atlas.get(&key) {
+            return Some(*entry);
+        }
+        let image = crate::text::rasterize(key)?;
+        self.text_pipeline.insert(&self.queue, key, &image);
+        self.text_pipeline.atlas.get(&key).copied()
+    }
+
+    pub fn text_report(&self) -> (usize, usize, u64, bool) {
+        (
+            self.text_glyphs.len(),
+            self.text_pipeline.atlas.len(),
+            self.text_pipeline.atlas.resets(),
+            crate::text::fonts_ready(),
+        )
     }
 
     pub fn upload_tray_icon(&mut self, key: String, width: u32, height: u32, bgra: &[u8]) {
@@ -631,6 +735,7 @@ impl WgpuState {
         modal_list.sort_by(back_to_front);
 
         let (screen_w, screen_h) = (self.width.max(1) as f32, self.height.max(1) as f32);
+        self.build_text_glyphs();
         let mut hud_list: Vec<usize> = Vec::new();
         for entry in &self.hud_layout {
             let Some(idx) = self.quads.iter().position(|(qid, _)| *qid == entry.id) else {
@@ -670,7 +775,8 @@ impl WgpuState {
                     hover: frame.hover,
                     ambient: frame.ambient,
                     hand: frame.hand,
-                    _pad: [0.0; 3],
+                    dial: frame.dial,
+                    _pad: [0.0; 2],
                 }]),
             );
         }
@@ -714,6 +820,37 @@ impl WgpuState {
             let gauges = std::mem::take(&mut self.gauges);
             self.gauge_pipeline.upload(&self.device, &self.queue, &gauges);
             self.gauges = gauges;
+        }
+
+        if !self.panels.is_empty() {
+            let accent = self.orb.accent_color;
+            let body = self.orb.body_color;
+            self.queue.write_buffer(
+                &self.panel_pipeline.uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[PanelUniform {
+                    screen: [screen_w, screen_h, 0.0, 0.0],
+                    fill: [body[0], body[1], body[2], 0.96],
+                    border: [accent[0], accent[1], accent[2], 0.55],
+                    accent: [accent[0], accent[1], accent[2], 0.30],
+                }]),
+            );
+            let panels = std::mem::take(&mut self.panels);
+            self.panel_pipeline.upload(&self.device, &self.queue, &panels);
+            self.panels = panels;
+        }
+
+        if !self.text_glyphs.is_empty() {
+            self.queue.write_buffer(
+                &self.text_pipeline.uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[TextUniform {
+                    screen: [screen_w, screen_h, 0.0, 0.0],
+                }]),
+            );
+            let glyphs = std::mem::take(&mut self.text_glyphs);
+            self.text_pipeline.upload(&self.device, &self.queue, &glyphs);
+            self.text_glyphs = glyphs;
         }
 
         if let Some(frame) = &self.cursor_frame {
@@ -945,6 +1082,28 @@ impl WgpuState {
                 render_pass.draw(0..6, 0..self.gauges.len() as u32);
             }
 
+            if !self.panels.is_empty() {
+                render_pass.set_pipeline(&self.panel_pipeline.pipeline);
+                render_pass.set_bind_group(0, &self.panel_pipeline.uniform_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.panel_pipeline.instances.slice(..));
+                render_pass.draw(0..6, 0..self.panels.len() as u32);
+            }
+
+            if !self.text_glyphs.is_empty() {
+                let mask = self.text_mask_count;
+                let total = self.text_glyphs.len() as u32;
+                render_pass.set_pipeline(&self.text_pipeline.pipeline);
+                render_pass.set_vertex_buffer(0, self.text_pipeline.instances.slice(..));
+                if mask > 0 {
+                    render_pass.set_bind_group(0, &self.text_pipeline.mask_bind_group, &[]);
+                    render_pass.draw(0..6, 0..mask);
+                }
+                if total > mask {
+                    render_pass.set_bind_group(0, &self.text_pipeline.color_bind_group, &[]);
+                    render_pass.draw(0..6, mask..total);
+                }
+            }
+
             if self.cursor_frame.is_some() {
                 render_pass.set_pipeline(&self.cursor_pipeline.pipeline);
                 render_pass.set_bind_group(0, &self.cursor_pipeline.uniform_bind_group, &[]);
@@ -981,5 +1140,7 @@ mod shader_tests {
         validate("orb.wgsl", include_str!("shaders/orb.wgsl"));
         validate("cursor.wgsl", include_str!("shaders/cursor.wgsl"));
         validate("gauge.wgsl", include_str!("shaders/gauge.wgsl"));
+        validate("text.wgsl", include_str!("shaders/text.wgsl"));
+        validate("panel.wgsl", include_str!("shaders/panel.wgsl"));
     }
 }

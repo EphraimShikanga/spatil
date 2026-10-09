@@ -1,5 +1,6 @@
 mod bus;
 pub mod icon;
+pub mod menu;
 
 use std::sync::mpsc::{Sender as StdSender, channel};
 
@@ -12,6 +13,7 @@ use crate::input::drag::{BTN_MIDDLE, BTN_RIGHT};
 use crate::renderer::gauge::{GAUGE_PAD, GaugeInstance};
 use crate::renderer::hud::TrayQuad;
 use crate::shell::module::{self, ModuleAction, ModuleId, ModuleState};
+use crate::shell::tray::menu::MenuNode;
 use crate::renderer::orb::Corner;
 use crate::state::SpatilState;
 
@@ -141,6 +143,7 @@ pub struct TrayItem {
     pub icon_name: String,
     pub pixmap: Option<TrayPixmap>,
     pub menu: Option<String>,
+    pub tooltip: String,
 }
 
 impl TrayItem {
@@ -165,6 +168,7 @@ pub enum TrayEvent {
     OwnerLost(String),
     Updated(Box<TrayItem>),
     Removed(String),
+    Menu { key: String, root: Box<MenuNode> },
 }
 
 pub enum TrayRequest {
@@ -173,6 +177,8 @@ pub enum TrayRequest {
     SecondaryActivate { bus: String, path: String, x: i32, y: i32 },
     ContextMenu { bus: String, path: String, x: i32, y: i32 },
     Scroll { bus: String, path: String, delta: i32 },
+    FetchMenu { bus: String, path: String, key: String },
+    MenuEvent { bus: String, path: String, id: i32 },
 }
 
 impl TrayRequest {
@@ -182,7 +188,9 @@ impl TrayRequest {
             | Self::Activate { bus, path, .. }
             | Self::SecondaryActivate { bus, path, .. }
             | Self::ContextMenu { bus, path, .. }
-            | Self::Scroll { bus, path, .. } => (bus, path),
+            | Self::Scroll { bus, path, .. }
+            | Self::FetchMenu { bus, path, .. }
+            | Self::MenuEvent { bus, path, .. } => (bus, path),
         }
     }
 }
@@ -225,6 +233,8 @@ impl Tray {
 
     fn apply(&mut self, event: TrayEvent) -> Option<TrayRequest> {
         match event {
+            // Routed to SpatilState before it reaches here; see `init_tray`.
+            TrayEvent::Menu { .. } => None,
             TrayEvent::Unavailable => {
                 self.role = TrayRole::Unavailable;
                 self.items.clear();
@@ -283,9 +293,14 @@ pub fn init_tray(loop_handle: &LoopHandle<'static, SpatilState>) -> Option<StdSe
     let (request_tx, request_rx) = channel::<TrayRequest>();
 
     let inserted = loop_handle.insert_source(event_rx, |event, _, state: &mut SpatilState| {
-        if let Event::Msg(event) = event
-            && let Some(followup) = state.tray.apply(event)
-        {
+        let Event::Msg(event) = event else {
+            return;
+        };
+        if let TrayEvent::Menu { key, root } = event {
+            state.present_tray_menu(key, *root);
+            return;
+        }
+        if let Some(followup) = state.tray.apply(event) {
             state.tray.request(followup);
         }
     });
@@ -325,7 +340,11 @@ impl SpatilState {
                 let mut module = ModuleState::new(ModuleId::Tray(item.key.clone()));
                 module.icon = item.pixmap.clone().map(std::sync::Arc::new);
                 module.label = item.title.clone();
-                module.tooltip = item.title.clone();
+                module.tooltip = if item.tooltip.is_empty() {
+                    item.title.clone()
+                } else {
+                    item.tooltip.clone()
+                };
                 module.urgent = item.status == TrayStatus::NeedsAttention;
                 module
             }),
@@ -468,12 +487,55 @@ impl SpatilState {
         let request = match action {
             ModuleAction::Activate => TrayRequest::Activate { bus, path, x, y },
             ModuleAction::Secondary => TrayRequest::SecondaryActivate { bus, path, x, y },
-            ModuleAction::Context => TrayRequest::ContextMenu { bus, path, x, y },
+            // Prefer drawing the menu ourselves; ContextMenu asks the application
+            // to draw its own, which it cannot do usefully over a 3D compositor.
+            ModuleAction::Context => match self.tray_menu_path(key) {
+                Some(menu_path) => {
+                    self.pending_menu = self.module_slots
+                        .iter()
+                        .find(|(slot, _)| slot == id)
+                        .map(|(_, rect)| *rect);
+                    TrayRequest::FetchMenu { bus, path: menu_path, key: key.clone() }
+                }
+                None => TrayRequest::ContextMenu { bus, path, x, y },
+            },
             ModuleAction::ScrollUp => TrayRequest::Scroll { bus, path, delta: -1 },
             ModuleAction::ScrollDown => TrayRequest::Scroll { bus, path, delta: 1 },
         };
         self.tray.request(request);
         true
+    }
+
+    fn tray_menu_path(&self, key: &str) -> Option<String> {
+        self.tray
+            .visible_items()
+            .find(|item| item.key == key)
+            .and_then(|item| item.menu.clone())
+            .filter(|path| path != "/")
+    }
+
+    pub fn present_tray_menu(&mut self, key: String, root: MenuNode) {
+        let anchor = self
+            .pending_menu
+            .take()
+            .or_else(|| {
+                self.module_slots
+                    .iter()
+                    .find(|(slot, _)| slot.key() == key)
+                    .map(|(_, rect)| *rect)
+            })
+            .unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        let Some((bus, _)) = self.tray_address(&key) else {
+            return;
+        };
+        let Some(path) = self.tray_menu_path(&key) else {
+            return;
+        };
+        self.open_menu(key, bus, path, root, anchor);
+    }
+
+    pub fn send_menu_event(&mut self, bus: String, path: String, id: i32) {
+        self.tray.request(TrayRequest::MenuEvent { bus, path, id });
     }
 
     pub fn module_press(&mut self, point: Point<f64, Logical>, button: u32) -> bool {
@@ -507,6 +569,33 @@ impl SpatilState {
         };
         self.tray.request(TrayRequest::Activate { bus, path, x: 0, y: 0 });
         true
+    }
+}
+
+fn print_menu(node: &MenuNode, depth: usize) {
+    let indent = "  ".repeat(depth);
+    for child in &node.children {
+        if child.separator {
+            println!("{indent}---");
+            continue;
+        }
+        let mut marks = Vec::new();
+        if child.submenu {
+            marks.push("submenu".to_string());
+        }
+        if let Some(toggle) = child.toggle {
+            marks.push(format!("{toggle:?}"));
+        }
+        if !child.enabled {
+            marks.push("disabled".to_string());
+        }
+        let suffix = if marks.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", marks.join(", "))
+        };
+        println!("{indent}{:?} (id {}){suffix}", child.label, child.id);
+        print_menu(child, depth + 1);
     }
 }
 
@@ -559,14 +648,34 @@ pub fn probe() {
             TrayEvent::Removed(key) => println!("PROBE: removed {key}"),
             TrayEvent::Changed(sender) => println!("PROBE: changed {sender}"),
             TrayEvent::OwnerLost(name) => println!("PROBE: owner gone {name}"),
-            TrayEvent::Updated(item) => println!(
-                "PROBE: item id={} title={:?} status={} pixmap={:?} menu={}",
-                item.id,
-                item.title,
-                item.status.as_str(),
-                item.pixmap.as_ref().map(|p| (p.width, p.height)),
-                item.menu.is_some(),
-            ),
+            TrayEvent::Menu { key, root } => {
+                println!("PROBE: menu for {key}");
+                print_menu(root, 1);
+            }
+            TrayEvent::Updated(item) => {
+                println!(
+                    "PROBE: item id={} title={:?} status={} tooltip={:?} pixmap={:?} menu={:?}",
+                    item.id,
+                    item.title,
+                    item.status.as_str(),
+                    item.tooltip,
+                    item.pixmap.as_ref().map(|p| (p.width, p.height)),
+                    item.menu,
+                );
+                if let Some(menu_path) = item.menu.clone().filter(|p| p != "/") {
+                    let connection = pollster::block_on(zbus::Connection::session());
+                    if let Ok(connection) = connection {
+                        match pollster::block_on(bus::probe_menu(&connection, &item.bus, &menu_path))
+                        {
+                            Ok(root) => {
+                                println!("PROBE: menu {}{menu_path}", item.bus);
+                                print_menu(&root, 1);
+                            }
+                            Err(err) => println!("PROBE: menu unavailable: {err}"),
+                        }
+                    }
+                }
+            }
         }
         if let Some(followup) = tray.apply(event) {
             let (bus, path) = followup.address();
@@ -576,13 +685,23 @@ pub fn probe() {
                 && let Ok(item) = pollster::block_on(bus::read_item(&connection, &bus, &path))
             {
                 println!(
-                    "PROBE: item id={} title={:?} status={} pixmap={:?} menu={}",
+                    "PROBE: item id={} title={:?} status={} tooltip={:?} pixmap={:?} menu={:?}",
                     item.id,
                     item.title,
                     item.status.as_str(),
+                    item.tooltip,
                     item.pixmap.as_ref().map(|p| (p.width, p.height)),
-                    item.menu.is_some(),
+                    item.menu,
                 );
+                if let Some(menu_path) = item.menu.clone().filter(|p| p != "/") {
+                    match pollster::block_on(bus::probe_menu(&connection, &item.bus, &menu_path)) {
+                        Ok(root) => {
+                            println!("PROBE: menu {}{menu_path}", item.bus);
+                            print_menu(&root, 1);
+                        }
+                        Err(err) => println!("PROBE: menu unavailable: {err}"),
+                    }
+                }
                 tray.apply(TrayEvent::Updated(Box::new(item)));
             }
         }
@@ -633,6 +752,7 @@ mod tests {
             icon_name: "demo".to_string(),
             pixmap: None,
             menu: None,
+            tooltip: String::new(),
         }
     }
 

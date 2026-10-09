@@ -9,6 +9,7 @@ use zbus::zvariant::OwnedObjectPath;
 use zbus::message::Type as MessageType;
 use zbus::{Connection, MatchRule, MessageStream, interface, proxy};
 
+use super::menu::{DBusMenuProxy, MAX_DEPTH, MenuNode, WANTED_PROPERTIES, parse};
 use super::{TrayEvent, TrayItem, TrayPixmap, TrayRequest, TrayRole, TrayStatus};
 
 pub const WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
@@ -33,6 +34,8 @@ trait Item {
     fn menu(&self) -> zbus::Result<OwnedObjectPath>;
     #[zbus(property)]
     fn icon_theme_path(&self) -> zbus::Result<String>;
+    #[zbus(property)]
+    fn tool_tip(&self) -> zbus::Result<(String, Vec<(i32, i32, Vec<u8>)>, String, String)>;
 
     fn activate(&self, x: i32, y: i32) -> zbus::Result<()>;
     fn secondary_activate(&self, x: i32, y: i32) -> zbus::Result<()>;
@@ -407,7 +410,65 @@ pub async fn read_item(
         icon_name,
         pixmap,
         menu: proxy.menu().await.ok().map(|p| p.to_string()),
+        tooltip: tooltip_text(proxy.tool_tip().await.ok()),
     })
+}
+
+/// SNI ToolTip is `(icon_name, icon_pixmap, title, description)`; the two text
+/// fields are joined since either may be the only one an application sets.
+fn tooltip_text(raw: Option<(String, Vec<(i32, i32, Vec<u8>)>, String, String)>) -> String {
+    let Some((_, _, title, description)) = raw else {
+        return String::new();
+    };
+    match (title.trim(), description.trim()) {
+        ("", "") => String::new(),
+        ("", body) => body.to_string(),
+        (head, "") => head.to_string(),
+        (head, body) if head == body => head.to_string(),
+        (head, body) => format!("{head} — {body}"),
+    }
+}
+
+async fn menu_proxy<'a>(
+    connection: &Connection,
+    bus: &str,
+    path: &str,
+) -> zbus::Result<DBusMenuProxy<'a>> {
+    DBusMenuProxy::builder(connection)
+        .destination(bus.to_string())?
+        .path(path.to_string())?
+        .build()
+        .await
+}
+
+pub async fn probe_menu(connection: &Connection, bus: &str, path: &str) -> zbus::Result<MenuNode> {
+    fetch_menu(connection, bus, path).await
+}
+
+async fn fetch_menu(connection: &Connection, bus: &str, path: &str) -> zbus::Result<MenuNode> {
+    let proxy = menu_proxy(connection, bus, path).await?;
+    // Advisory: applications populate lazily off it, but many never implement it.
+    let _ = proxy.about_to_show(0).await;
+    let (_, raw) = proxy
+        .get_layout(0, MAX_DEPTH as i32, WANTED_PROPERTIES)
+        .await?;
+    Ok(parse(&raw))
+}
+
+async fn send_menu_event(
+    connection: &Connection,
+    bus: &str,
+    path: &str,
+    id: i32,
+) -> zbus::Result<()> {
+    let proxy = menu_proxy(connection, bus, path).await?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as u32)
+        .unwrap_or(0);
+    proxy
+        .event(id, "clicked", &zbus::zvariant::Value::from(0i32), timestamp)
+        .await
 }
 
 fn spawn_request_worker(
@@ -432,6 +493,34 @@ async fn dispatch_request(
     events: &Sender<TrayEvent>,
 ) {
     let (bus, path) = request.address();
+
+    match request {
+        TrayRequest::FetchMenu { key, .. } => {
+            match fetch_menu(connection, bus, path).await {
+                Ok(root) => {
+                    let _ = events.send(TrayEvent::Menu {
+                        key: key.clone(),
+                        root: Box::new(root),
+                    });
+                }
+                Err(err) => {
+                    tracing::debug!("tray item {bus}{path} has no usable menu: {err}");
+                    let _ = events.send(TrayEvent::Menu {
+                        key: key.clone(),
+                        root: Box::new(MenuNode::default()),
+                    });
+                }
+            }
+            return;
+        }
+        TrayRequest::MenuEvent { id, .. } => {
+            if let Err(err) = send_menu_event(connection, bus, path, *id).await {
+                tracing::warn!("tray menu {bus}{path} rejected item {id}: {err}");
+            }
+            return;
+        }
+        _ => {}
+    }
 
     if let TrayRequest::Refresh { .. } = request {
         match read_item(connection, bus, path).await {
@@ -469,6 +558,7 @@ async fn dispatch_request(
         TrayRequest::SecondaryActivate { x, y, .. } => proxy.secondary_activate(*x, *y).await,
         TrayRequest::ContextMenu { x, y, .. } => proxy.context_menu(*x, *y).await,
         TrayRequest::Scroll { delta, .. } => proxy.scroll(*delta, "vertical").await,
+        TrayRequest::FetchMenu { .. } | TrayRequest::MenuEvent { .. } => Ok(()),
     };
     if let Err(err) = result {
         tracing::debug!("tray item {bus}{path} rejected the call: {err}");
@@ -522,6 +612,23 @@ mod tests {
         let px = |w: i32, h: i32| (w, h, vec![0u8; (w * h * 4) as usize]);
         let best = best_pixmap(vec![px(16, 16), px(64, 64), px(22, 22)]).expect("a pixmap");
         assert_eq!((best.width, best.height), (64, 64));
+    }
+
+    #[test]
+    fn a_tooltip_joins_its_title_and_description() {
+        let raw = |t: &str, d: &str| {
+            Some((String::new(), Vec::new(), t.to_string(), d.to_string()))
+        };
+        assert_eq!(tooltip_text(raw("Network", "Connected to Wi-Fi")), "Network — Connected to Wi-Fi");
+        assert_eq!(tooltip_text(raw("Network", "")), "Network");
+        assert_eq!(tooltip_text(raw("", "Connected")), "Connected");
+        assert_eq!(tooltip_text(raw("Same", "Same")), "Same");
+        assert_eq!(tooltip_text(raw("  ", "  ")), "");
+    }
+
+    #[test]
+    fn an_item_with_no_tooltip_property_yields_an_empty_string() {
+        assert_eq!(tooltip_text(None), "");
     }
 
     #[test]

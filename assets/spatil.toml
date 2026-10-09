@@ -194,6 +194,20 @@ spotlight_fill = 0.55             # how much of the view a shell-launched window
 icon_theme = ""                   # tray icon theme; empty = follow your GTK setting,
                                   # then fall back to Adwaita / breeze / Papirus / hicolor
 
+# Text. Hover a module on the orb's arc for ~450ms and its name appears beside it
+# -- the wifi network, the battery estimate, whatever a tray application calls
+# itself. `font` takes a generic family (sans-serif, monospace, serif) or a
+# concrete face name; anything your system has, including non-Latin scripts and
+# colour emoji, since shaping falls back across the whole font database.
+font = "sans-serif"
+font_size = 12
+
+# The orb face. "analog" draws hour and minute hands (the second hand is your
+# mouse cursor, which flies onto the rim when you go idle). "digital" hides the
+# two hands and shows HH:MM instead; the cursor still flies to the second-hand
+# position, so the orb keeps telling you it is idle.
+familiar_clock = "analog"          # "analog" | "digital"
+
 # Clicking a native module (wifi, bluetooth, volume, battery) opens the control
 # application you already have installed -- Spatil does not reimplement them.
 # Leave a value empty to let Spatil pick the first of its defaults that is on your

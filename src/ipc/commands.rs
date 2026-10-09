@@ -47,6 +47,17 @@ impl SpatilState {
                 let event = super::protocol::SpatilEvent::with_data("tray_state", self.tray_report());
                 self.broadcast_event(&event);
             }
+            "menu_state" => {
+                let event = super::protocol::SpatilEvent::with_data("menu_state", self.menu_report());
+                self.broadcast_event(&event);
+            }
+            "menu_close" => {
+                self.close_menu();
+            }
+            "text_state" => {
+                let event = super::protocol::SpatilEvent::with_data("text_state", self.text_report());
+                self.broadcast_event(&event);
+            }
             "orb_state" => {
                 let event = super::protocol::SpatilEvent::with_data("orb_state", self.orb_report());
                 self.broadcast_event(&event);

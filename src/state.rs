@@ -15,6 +15,8 @@ use crate::config::{Action, KeyCombo, SessionState, SpatilConfig};
 use crate::input::drag::{Drag, Navigate};
 use crate::renderer::WgpuState;
 use crate::shell::orb::OrbRuntime;
+use crate::shell::menu::MenuRuntime;
+use crate::shell::tooltip::TooltipRuntime;
 use crate::shell::module::{ModuleId, ModuleState};
 use crate::shell::audio::init_audio;
 use crate::shell::bluetooth::init_bluetooth;
@@ -135,6 +137,9 @@ pub struct SpatilState {
     pub orb: OrbRuntime,
     pub tray: Tray,
     pub module_slots: Vec<(ModuleId, [f32; 4])>,
+    pub tooltip: TooltipRuntime,
+    pub menu: MenuRuntime,
+    pub pending_menu: Option<[f32; 4]>,
     pub network: Option<ModuleState>,
     pub battery: Option<ModuleState>,
     pub bluetooth: Option<ModuleState>,
@@ -301,6 +306,9 @@ impl SpatilState {
             orb: OrbRuntime::default(),
             tray: Tray::default(),
             module_slots: Vec::new(),
+            tooltip: TooltipRuntime::default(),
+            menu: MenuRuntime::default(),
+            pending_menu: None,
             network: None,
             battery: None,
             bluetooth: None,
@@ -407,6 +415,9 @@ impl SpatilState {
         self.tick_backdrop(dt_ms);
         self.tick_orb(dt_ms);
         self.tick_modules();
+        self.tick_tooltip(dt_ms);
+        self.tick_menu(dt_ms);
+        self.publish_hud_text();
         // Derived, not latched: a Presented window that is *closed* rather than
         // dismissed would otherwise leave the parallax frozen for good.
         self.wgpu_state.parallax_frozen =

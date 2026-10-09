@@ -225,6 +225,7 @@ impl SpatilState {
             seconds_of_day: secs,
             open: self.orb.open.value.clamp(0.0, 1.0),
             hover: self.orb.hover.value.clamp(0.0, 1.0),
+            dial: if self.wgpu_state.orb.digits { 0.0 } else { 1.0 },
             ambient,
             hand: flight.hand,
         });
