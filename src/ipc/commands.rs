@@ -58,6 +58,11 @@ impl SpatilState {
                 let event = super::protocol::SpatilEvent::with_data("text_state", self.text_report());
                 self.broadcast_event(&event);
             }
+            "frame_stats" => {
+                let event = super::protocol::SpatilEvent::with_data("frame_stats", self.frame_stats_report());
+                self.broadcast_event(&event);
+            }
+            "frame_stats_reset" => self.frame_stats.reset(),
             "orb_state" => {
                 let event = super::protocol::SpatilEvent::with_data("orb_state", self.orb_report());
                 self.broadcast_event(&event);

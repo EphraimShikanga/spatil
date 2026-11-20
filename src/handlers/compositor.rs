@@ -149,12 +149,14 @@ impl CompositorHandler for SpatilState {
                 if let Some((w, h)) = dims {
                     self.set_window_size(&target_surface_id, w, h);
                 }
+                self.frame_stats.record_dmabuf_commit();
                 tracing::trace!(surface_id = ?surface.id(), buffer_id = ?buffer.id(), "attached imported dmabuf texture to toplevel surface");
             }
             return;
         }
 
         // Software path: copy SHM bytes out of the client's pool and upload.
+        let upload_started = std::time::Instant::now();
         let import_result = shm::with_buffer_contents(&buffer, |ptr, len, data| {
             if !matches!(
                 data.format,
@@ -207,6 +209,7 @@ impl CompositorHandler for SpatilState {
                         &bytes,
                         has_alpha,
                     );
+                    self.frame_stats.record_shm_upload(upload_started.elapsed());
                     self.set_window_size(&target_surface_id, width, height);
                 }
             }

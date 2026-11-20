@@ -1,7 +1,7 @@
 use smithay::backend::allocator::dmabuf::{AsDmabuf, Dmabuf};
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBuffer, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::{Buffer as _, Fourcc, Modifier};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::backend::drm::gbm::{GbmFramebuffer, framebuffer_from_bo};
 use smithay::backend::drm::{
@@ -22,6 +22,7 @@ use smithay::utils::{DeviceFd, Rectangle, Size, Transform};
 
 use crate::backend;
 use crate::config::SpatilConfig;
+use crate::frame_stats::FrameSample;
 use crate::renderer::{self, WgpuState};
 use crate::state::SpatilState;
 
@@ -101,10 +102,8 @@ fn try_run(config: SpatilConfig) -> Result<(), String> {
 
     let (connector, mode, crtc) = pick_output(&drm, &config.output)?;
     let (mw, mh) = mode.size();
-    tracing::info!(
-        "output: connector {connector:?} mode {mw}x{mh}@{} crtc {crtc:?}",
-        mode.vrefresh()
-    );
+    let refresh_hz = mode.vrefresh();
+    tracing::info!("output: connector {connector:?} mode {mw}x{mh}@{refresh_hz} crtc {crtc:?}");
 
     let instance = renderer::new_vulkan_instance();
     let adapter = pick_adapter(&instance, render_dev)?;
@@ -177,6 +176,7 @@ fn try_run(config: SpatilConfig) -> Result<(), String> {
         config,
     );
     state.run_autostart();
+    state.frame_stats.set_refresh_hz(refresh_hz);
     state.drm = Some(DrmOutput {
         session: session.clone(),
         device: drm,
@@ -294,9 +294,11 @@ impl SpatilState {
             }
         }
 
+        let started = Instant::now();
         self.reveal_pending();
         self.tick_animations(dt_ms);
         self.sync_hw_cursor_visibility();
+        let ticked = Instant::now();
 
         // Clone the view (Arc) + copy the fb handle so no borrow of self.drm is held
         // across the mutable render below.
@@ -315,6 +317,7 @@ impl SpatilState {
         };
 
         self.wgpu_state.render(&mut self.world, &view);
+        let rendered = Instant::now();
 
         // Block until the GPU write completes before scanning out. A KMS in-fence
         // would avoid the CPU stall, but wgpu 30 exposes no exportable fence from
@@ -325,7 +328,9 @@ impl SpatilState {
             submission_index: None,
             timeout: Some(GPU_WAIT_TIMEOUT),
         });
+        let waited = Instant::now();
         if let Err(err) = poll {
+            self.frame_stats.record_skipped();
             tracing::error!(
                 "GPU wait failed ({err:?}) after {GPU_WAIT_TIMEOUT:?}; skipping flip \
                  (loop stays responsive -- Super+Shift+q or a VT switch still work)"
@@ -363,6 +368,12 @@ impl SpatilState {
             }
             Err(err) => tracing::error!("DRM {} failed: {err}", if drm.first_flip_done { "page-flip" } else { "commit" }),
         }
+        self.frame_stats.record_frame(FrameSample {
+            tick: ticked - started,
+            render_cpu: rendered - ticked,
+            gpu_wait: Some(waited - rendered),
+            total: started.elapsed(),
+        });
 
         self.send_frame_callbacks();
         if let Err(err) = self.display_handle.flush_clients() {
@@ -377,7 +388,9 @@ impl SpatilState {
         match (now, drm.last_vblank) {
             (Some(now), Some(last)) => {
                 drm.last_vblank = Some(now);
-                now.saturating_sub(last).as_secs_f32() * 1000.0
+                let interval = now.saturating_sub(last).as_secs_f32() * 1000.0;
+                self.frame_stats.record_interval(interval);
+                interval
             }
             (Some(now), None) => {
                 drm.last_vblank = Some(now);

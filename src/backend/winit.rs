@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use smithay::reexports::calloop::EventLoop as CalloopEventLoop;
 use smithay::reexports::wayland_server::DisplayHandle;
@@ -9,6 +10,7 @@ use winit::window::{Window, WindowId};
 
 use crate::backend;
 use crate::config::SpatilConfig;
+use crate::frame_stats::FrameSample;
 use crate::renderer::WgpuState;
 use crate::state::SpatilState;
 
@@ -93,9 +95,12 @@ impl ApplicationHandler for SpatilApp {
                 state.handle_pointer_axis(delta);
             }
             WindowEvent::RedrawRequested => {
+                let started = Instant::now();
                 state.reveal_pending();
                 let dt_ms = state.cpu_dt_ms();
                 state.tick_animations(dt_ms);
+                state.frame_stats.record_interval(dt_ms);
+                let ticked = Instant::now();
 
                 if state.cursor_hidden != self.cursor_hidden
                     && let Some(window) = &self.window
@@ -135,6 +140,13 @@ impl ApplicationHandler for SpatilApp {
                         .texture
                         .create_view(&wgpu::TextureViewDescriptor::default());
                     state.wgpu_state.render(&mut state.world, &view);
+                    // Measured before present: it blocks on the host compositor's vsync.
+                    state.frame_stats.record_frame(FrameSample {
+                        tick: ticked - started,
+                        render_cpu: ticked.elapsed(),
+                        gpu_wait: None,
+                        total: started.elapsed(),
+                    });
                     state.wgpu_state.queue.present(surface_texture);
                     state.send_frame_callbacks();
 
@@ -142,6 +154,8 @@ impl ApplicationHandler for SpatilApp {
                         self.needs_reconfigure = false;
                         surface.configure(&state.wgpu_state.device, surface_config);
                     }
+                } else {
+                    state.frame_stats.record_skipped();
                 }
 
                 self.calloop

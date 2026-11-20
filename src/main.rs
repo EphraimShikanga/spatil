@@ -1,5 +1,6 @@
 mod backend;
 mod config;
+mod frame_stats;
 mod handlers;
 mod input;
 mod ipc;

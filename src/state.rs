@@ -145,6 +145,7 @@ pub struct SpatilState {
     pub bluetooth: Option<ModuleState>,
     pub audio: Option<ModuleState>,
     pub cursor_hidden: bool,
+    pub frame_stats: crate::frame_stats::FrameStats,
     centred: CentredWindows,
     window_id_counter: u32,
 }
@@ -314,6 +315,7 @@ impl SpatilState {
             bluetooth: None,
             audio: None,
             cursor_hidden: false,
+            frame_stats: crate::frame_stats::FrameStats::new(env_flag("SPATIL_FRAME_STATS")),
             centred: CentredWindows::default(),
             window_id_counter: 1,
         };
@@ -430,6 +432,11 @@ impl SpatilState {
             spring_stiffness: self.config.animation.spring_stiffness,
             spring_damping: self.config.animation.spring_damping,
         }
+    }
+
+    pub fn frame_stats_report(&self) -> serde_json::Value {
+        let backend = if self.drm.is_some() { "drm" } else { "winit" };
+        self.frame_stats.report(backend, self.dmabuf_global.is_some())
     }
 
     /// CPU-clock frame delta (winit backend). DRM uses the vblank timestamp instead.
