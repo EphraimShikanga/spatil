@@ -185,7 +185,7 @@ familiar_corner = "bottom_right"  # top_left | top_right | bottom_left | bottom_
 familiar_size = 56                # diameter in pixels
 familiar_margin = 20              # inset from the screen corner in pixels
 familiar_color = "#12161C"        # orb body
-familiar_accent = "#4A90E2"       # hands, rim and the revolving second dot
+familiar_accent = "#4A90E2"       # second hand, jewel, orbit, level rims; also tints the lume
 idle_ms = 5000                    # stillness before the orb goes ambient
 spotlight_fill = 0.55             # how much of the view a shell-launched window covers.
                                   # Unlike "present" this never resizes the application --
