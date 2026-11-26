@@ -807,14 +807,14 @@ impl WgpuState {
         }
 
         if !self.gauges.is_empty() {
-            let accent = self.orb.accent_color;
+            let cursor = self.orb_frame.as_ref().map_or([0.0; 2], |frame| frame.cursor);
             self.queue.write_buffer(
                 &self.gauge_pipeline.uniform_buffer,
                 0,
                 bytemuck::cast_slice(&[GaugeUniform {
-                    screen: [screen_w, screen_h, 0.0, 0.0],
-                    track: [accent[0], accent[1], accent[2], 0.18],
-                    fill: accent,
+                    screen: [screen_w, screen_h, cursor[0], cursor[1]],
+                    body: self.orb.body_color,
+                    fill: self.orb.accent_color,
                     urgent: [0.85, 0.24, 0.24, 1.0],
                 }]),
             );
@@ -1063,6 +1063,13 @@ impl WgpuState {
                 render_pass.draw(0..6, 0..1);
             }
 
+            if !self.gauges.is_empty() {
+                render_pass.set_pipeline(&self.gauge_pipeline.pipeline);
+                render_pass.set_bind_group(0, &self.gauge_pipeline.uniform_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.gauge_pipeline.instances.slice(..));
+                render_pass.draw(0..6, 0..self.gauges.len() as u32);
+            }
+
             if !tray_list.is_empty() {
                 render_pass.set_pipeline(&self.hud_pipeline.pipeline);
                 render_pass.set_vertex_buffer(0, self.quad_pipeline.vertex_buffer.slice(..));
@@ -1074,13 +1081,6 @@ impl WgpuState {
                     render_pass.set_bind_group(0, &quad.bind_group, &[]);
                     render_pass.draw_indexed(0..self.quad_pipeline.num_indices, 0, 0..1);
                 }
-            }
-
-            if !self.gauges.is_empty() {
-                render_pass.set_pipeline(&self.gauge_pipeline.pipeline);
-                render_pass.set_bind_group(0, &self.gauge_pipeline.uniform_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.gauge_pipeline.instances.slice(..));
-                render_pass.draw(0..6, 0..self.gauges.len() as u32);
             }
 
             if !self.panels.is_empty() {

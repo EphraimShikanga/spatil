@@ -243,6 +243,7 @@ impl SpatilState {
                 (rect.loc.x as f32 + radius, rect.loc.y as f32 + radius),
                 radius,
             ),
+            cursor: [flight.cursor_pos.0, flight.cursor_pos.1],
         });
 
         self.cursor_hidden = flight.hide_real_cursor;

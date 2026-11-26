@@ -1,13 +1,13 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-pub const GAUGE_PAD: f32 = 1.42;
+pub const GAUGE_PAD: f32 = 1.4;
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct GaugeUniform {
     pub screen: [f32; 4],
-    pub track: [f32; 4],
+    pub body: [f32; 4],
     pub fill: [f32; 4],
     pub urgent: [f32; 4],
 }

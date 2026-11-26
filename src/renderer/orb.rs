@@ -78,6 +78,8 @@ pub struct OrbFrame {
     pub orbit: [f32; 4],
     /// Where the cursor sits relative to the dial, softly clamped to the unit disc.
     pub light: [f32; 2],
+    /// The cursor in screen pixels, real or in flight; modules are lit from it too.
+    pub cursor: [f32; 2],
 }
 
 #[repr(C)]
