@@ -150,6 +150,15 @@ fn flight_pose(
     }
 }
 
+/// The cursor as seen from the dial, in orb radii with y up, squashed into the unit
+/// disc so a far pointer gives direction and a near one gives position.
+fn dial_light(cursor: (f32, f32), orb_centre: (f32, f32), orb_radius: f32) -> [f32; 2] {
+    let r = orb_radius.max(1.0);
+    let v = ((cursor.0 - orb_centre.0) / r, (orb_centre.1 - cursor.1) / r);
+    let squash = (1.0 + v.0 * v.0 + v.1 * v.1).sqrt();
+    [v.0 / squash, v.1 / squash]
+}
+
 fn nearest_corner(centre: (f32, f32), zone: Rectangle<i32, Logical>) -> Corner {
     let mid_x = zone.loc.x as f32 + zone.size.w as f32 * 0.5;
     let mid_y = zone.loc.y as f32 + zone.size.h as f32 * 0.5;
@@ -228,6 +237,12 @@ impl SpatilState {
             dial: if self.wgpu_state.orb.digits { 0.0 } else { 1.0 },
             ambient,
             hand: flight.hand,
+            orbit: [0.0; 4],
+            light: dial_light(
+                flight.cursor_pos,
+                (rect.loc.x as f32 + radius, rect.loc.y as f32 + radius),
+                radius,
+            ),
         });
 
         self.cursor_hidden = flight.hide_real_cursor;

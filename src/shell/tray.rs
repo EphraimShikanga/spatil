@@ -39,37 +39,68 @@ fn arc_start(corner: Corner) -> f32 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TrayArc {
+    radius: f32,
+    first: f32,
+    step: f32,
+    shown: usize,
+}
+
+impl TrayArc {
+    fn new(corner: Corner, orb_radius: f32, count: usize) -> Option<Self> {
+        if count == 0 {
+            return None;
+        }
+        let base = orb_radius + ICON * 0.5 + RING_INSET;
+        let pitch = ICON + GAP;
+        let needed = count as f32 * pitch / QUARTER;
+        let radius = base.max(needed).min(base * MAX_RING_GROWTH);
+
+        let step = pitch / radius;
+        let fits = (((QUARTER / step).floor() as usize) + 1).max(1);
+        let shown = count.min(fits);
+        if shown < count {
+            tracing::warn!("tray arc holds {shown} of {count} items; the rest are not shown");
+        }
+
+        let span = (shown as f32 - 1.0) * step;
+        let mid = arc_start(corner) + QUARTER * 0.5;
+        Some(Self { radius, first: mid - span * 0.5, step, shown })
+    }
+
+    fn angle(&self, i: usize) -> f32 {
+        self.first + i as f32 * self.step
+    }
+
+    /// The arc in the orb shader's terms: radius in orb radii and dial angles, which
+    /// run clockwise from twelve o'clock where screen angles run from three o'clock.
+    fn orbit(&self, orb_radius: f32, reveal: f32) -> [f32; 4] {
+        [
+            self.radius / orb_radius.max(1.0),
+            self.angle(0) + QUARTER,
+            self.angle(self.shown - 1) + QUARTER,
+            reveal,
+        ]
+    }
+}
+
 pub fn tray_slots(
     corner: Corner,
     orb_centre: (f32, f32),
     orb_radius: f32,
     count: usize,
 ) -> Vec<TraySlot> {
-    if count == 0 {
+    let Some(arc) = TrayArc::new(corner, orb_radius, count) else {
         return Vec::new();
-    }
-    let base = orb_radius + ICON * 0.5 + RING_INSET;
-    let pitch = ICON + GAP;
-    let needed = count as f32 * pitch / QUARTER;
-    let radius = base.max(needed).min(base * MAX_RING_GROWTH);
-
-    let step = pitch / radius;
-    let fits = (((QUARTER / step).floor() as usize) + 1).max(1);
-    let shown = count.min(fits);
-    if shown < count {
-        tracing::warn!("tray arc holds {shown} of {count} items; the rest are not shown");
-    }
-
-    let span = (shown as f32 - 1.0) * step;
-    let mid = arc_start(corner) + QUARTER * 0.5;
-    let first = mid - span * 0.5;
-    (0..shown)
+    };
+    (0..arc.shown)
         .map(|i| {
-            let angle = first + i as f32 * step;
+            let angle = arc.angle(i);
             TraySlot {
                 centre: (
-                    orb_centre.0 + angle.cos() * radius,
-                    orb_centre.1 + angle.sin() * radius,
+                    orb_centre.0 + angle.cos() * arc.radius,
+                    orb_centre.1 + angle.sin() * arc.radius,
                 ),
                 size: ICON,
             }
@@ -404,6 +435,12 @@ impl SpatilState {
         let radius = rect.size.w as f32 * 0.5;
         let centre = (rect.loc.x as f32 + radius, rect.loc.y as f32 + radius);
         let slots = tray_slots(self.orb_corner(), centre, radius, drawable.len());
+        if let (Some(arc), Some(frame)) = (
+            TrayArc::new(self.orb_corner(), radius, drawable.len()),
+            self.wgpu_state.orb_frame.as_mut(),
+        ) {
+            frame.orbit = arc.orbit(radius, open);
+        }
 
         self.module_slots.clear();
         let mut gauges = Vec::new();

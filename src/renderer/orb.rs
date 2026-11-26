@@ -74,6 +74,10 @@ pub struct OrbFrame {
     pub ambient: f32,
     pub hand: f32,
     pub dial: f32,
+    /// Orbit the modules ride on: radius in orb radii, first/last dial angle, reveal.
+    pub orbit: [f32; 4],
+    /// Where the cursor sits relative to the dial, softly clamped to the unit disc.
+    pub light: [f32; 2],
 }
 
 #[repr(C)]
@@ -83,13 +87,14 @@ pub struct OrbUniform {
     pub screen: [f32; 4],
     pub body_color: [f32; 4],
     pub accent_color: [f32; 4],
+    pub orbit: [f32; 4],
     pub seconds_of_day: f32,
     pub open: f32,
     pub hover: f32,
     pub ambient: f32,
     pub hand: f32,
     pub dial: f32,
-    pub _pad: [f32; 2],
+    pub light: [f32; 2],
 }
 
 pub struct OrbPipeline {
