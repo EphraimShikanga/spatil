@@ -162,7 +162,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let hour = dial(TAU * fract(secs / 43200.0));
 
         // Hands float above the enamel; their shadow falls away from the light.
-        let lift = -ldir.xy * 0.05 * lit;
+        let lift = ldir.xy * 0.05 * lit;
         let shadow_hour = hand_sd(p + lift, hour, -0.1, 0.46, 0.062, 0.022);
         let shadow_min = hand_sd(p + lift, minute, -0.16, 0.7, 0.046, 0.014);
         let hand_shadow = fill(min(shadow_hour, shadow_min) - 0.02, 0.05) * orb.dial * lit;
@@ -171,7 +171,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let idx = indices_sd(p);
         let idx_m = fill(idx, aa);
         let idx_glow = exp(-max(idx, 0.0) * 28.0) * ambient * 0.35;
-        face = over(face, vec4<f32>(ink, max(idx_m * mix(0.55, 0.85, orb.hover + ambient), idx_glow)));
+        face = over(face, vec4<f32>(ink, max(idx_m * mix(0.55, 0.85, clamp(orb.hover + ambient, 0.0, 1.0)), idx_glow)));
 
         // Bezel: a polished band lit on the side facing the cursor.
         let bezel = fill(d - radius, aa) * (1.0 - fill(d - radius * BEZEL, aa));
