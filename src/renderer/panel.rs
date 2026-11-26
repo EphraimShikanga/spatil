@@ -6,8 +6,18 @@ use wgpu::util::DeviceExt;
 pub struct PanelUniform {
     pub screen: [f32; 4],
     pub fill: [f32; 4],
-    pub border: [f32; 4],
-    pub accent: [f32; 4],
+    pub notch: [f32; 4],
+    pub tint: [f32; 4],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelKind {
+    /// A raised surface (menu, tooltip): enamel fill and a drop shadow.
+    Surface = 0,
+    /// The highlighted menu row.
+    Highlight = 1,
+    /// A hairline separator.
+    Rule = 2,
 }
 
 #[repr(C)]
@@ -29,10 +39,10 @@ impl PanelInstance {
         }
     }
 
-    pub fn new(rect: [f32; 4], radius: f32, alpha: f32, highlight: f32) -> Self {
+    pub fn new(rect: [f32; 4], radius: f32, alpha: f32, kind: PanelKind) -> Self {
         Self {
             rect,
-            params: [radius, alpha, highlight, 0.0],
+            params: [radius, alpha, kind as u8 as f32, 0.0],
         }
     }
 }

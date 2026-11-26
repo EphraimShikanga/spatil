@@ -831,9 +831,9 @@ impl WgpuState {
                 0,
                 bytemuck::cast_slice(&[PanelUniform {
                     screen: [screen_w, screen_h, 0.0, 0.0],
-                    fill: [body[0], body[1], body[2], 0.96],
-                    border: [accent[0], accent[1], accent[2], 0.55],
-                    accent: [accent[0], accent[1], accent[2], 0.30],
+                    fill: [body[0], body[1], body[2], 0.97],
+                    notch: [accent[0], accent[1], accent[2], 1.0],
+                    tint: [accent[0], accent[1], accent[2], 0.16],
                 }]),
             );
             let panels = std::mem::take(&mut self.panels);

@@ -1,6 +1,6 @@
 use smithay::utils::{Logical, Point, Rectangle};
 
-use crate::renderer::panel::PanelInstance;
+use crate::renderer::panel::{PanelInstance, PanelKind};
 use crate::renderer::text::TextRun;
 use crate::scene::animation::spring_step;
 use crate::shell::tray::menu::{MenuNode, Toggle};
@@ -303,7 +303,7 @@ impl SpatilState {
         let alpha = self.menu.alpha;
         let font_size = self.config.shell.font_size;
 
-        panels.push(PanelInstance::new(self.menu.rect, RADIUS, alpha, 0.0));
+        panels.push(PanelInstance::new(self.menu.rect, RADIUS, alpha, PanelKind::Surface));
 
         let mut text = crate::config::parse_hex_color("#F2F4F8");
         let mut dim = crate::config::parse_hex_color("#8A909B");
@@ -314,11 +314,11 @@ impl SpatilState {
             };
             if node.separator {
                 let line = [rect[0] + PAD_X, rect[1] + rect[3] * 0.5, rect[2] - PAD_X * 2.0, 1.0];
-                panels.push(PanelInstance::new(line, 0.0, alpha * 0.35, 0.0));
+                panels.push(PanelInstance::new(line, 0.0, alpha, PanelKind::Rule));
                 continue;
             }
             if open.highlighted == Some(*index) && node.enabled {
-                panels.push(PanelInstance::new(*rect, RADIUS * 0.5, alpha, 1.0));
+                panels.push(PanelInstance::new(*rect, RADIUS * 0.5, alpha, PanelKind::Highlight));
             }
 
             let color = if node.enabled {

@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use smithay::utils::{Logical, Rectangle};
 
-use crate::renderer::panel::PanelInstance;
+use crate::renderer::panel::{PanelInstance, PanelKind};
 use crate::renderer::text::TextRun;
 use crate::scene::animation::spring_step;
 use crate::shell::module::ModuleId;
@@ -216,7 +216,7 @@ impl SpatilState {
             return None;
         }
         let rect = self.tooltip.rect;
-        let panel = PanelInstance::new(rect, RADIUS, self.tooltip.alpha, 0.0);
+        let panel = PanelInstance::new(rect, RADIUS, self.tooltip.alpha, PanelKind::Surface);
         let mut color = crate::config::parse_hex_color("#F2F4F8");
         color[3] = self.tooltip.alpha;
         let run = TextRun {
