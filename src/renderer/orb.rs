@@ -53,6 +53,28 @@ pub struct OrbParams {
     pub digits: bool,
     pub body_color: [f32; 4],
     pub accent_color: [f32; 4],
+    pub palette: OrbPalette,
+}
+
+/// The design's fixed colours (`dev/familiar-design/HANDOFF.md` tokens), in linear light.
+pub struct OrbPalette {
+    pub ink: [f32; 4],
+    pub hand_ink: [f32; 4],
+    pub dark: [f32; 4],
+    pub amber: [f32; 4],
+    pub quiet: [f32; 4],
+}
+
+impl OrbPalette {
+    fn new() -> Self {
+        Self {
+            ink: parse_hex_color("#F2F4F8"),
+            hand_ink: parse_hex_color("#F3F5F8"),
+            dark: parse_hex_color("#0B0D10"),
+            amber: parse_hex_color("#F5A524"),
+            quiet: parse_hex_color("#9AA3AF"),
+        }
+    }
 }
 
 impl OrbParams {
@@ -73,6 +95,7 @@ impl OrbParams {
             digits: shell.familiar_clock.eq_ignore_ascii_case("digital"),
             body_color: parse_hex_color(&shell.familiar_color),
             accent_color: parse_hex_color(&shell.familiar_accent),
+            palette: OrbPalette::new(),
         }
     }
 }
@@ -90,8 +113,7 @@ pub struct OrbFrame {
     pub card_radius: f32,
     /// Smooth-union distance in pixels between the orb disc and the card.
     pub blend: f32,
-    /// Complications: unread alerts, and any native module in trouble.
-    pub alert: f32,
+    /// A native module in trouble: the amber arc at six.
     pub warn: f32,
     /// Dial angle pointing from the orb toward the screen, where the alert pip sits.
     pub facing: f32,
@@ -115,6 +137,47 @@ pub struct OrbUniform {
     pub alert: f32,
     pub warn: f32,
     pub shape: [f32; 4],
+    pub agent_a: [f32; 4],
+    pub agent_b: [f32; 4],
+    pub agent_c: [f32; 4],
+    pub marks: [[f32; 4]; 3],
+    pub ink: [f32; 4],
+    pub hand_ink: [f32; 4],
+    pub dark: [f32; 4],
+    pub amber: [f32; 4],
+    pub quiet: [f32; 4],
+}
+
+impl OrbUniform {
+    pub fn new(frame: &OrbFrame, params: &OrbParams, screen: [f32; 2]) -> Self {
+        let a = &frame.agent;
+        let palette = &params.palette;
+        Self {
+            rect: frame.rect,
+            screen: [screen[0], screen[1], 0.0, 0.0],
+            body_color: params.body_color,
+            accent_color: params.accent_color,
+            card: frame.card,
+            seconds_of_day: frame.seconds_of_day,
+            open: frame.open,
+            hover: frame.hover,
+            ambient: frame.ambient,
+            hand: frame.hand,
+            dial: frame.dial,
+            alert: a.alert,
+            warn: frame.warn,
+            shape: [frame.card_radius, frame.blend, frame.facing, a.focus],
+            agent_a: [a.fold, a.park, a.voice, a.tint],
+            agent_b: [a.dim, a.step_alpha, a.step_angle, a.ring_hub],
+            agent_c: [a.solid_hub, a.arc, a.progress, a.privacy],
+            marks: std::array::from_fn(|i| std::array::from_fn(|j| a.marks[i * 4 + j])),
+            ink: palette.ink,
+            hand_ink: palette.hand_ink,
+            dark: palette.dark,
+            amber: palette.amber,
+            quiet: palette.quiet,
+        }
+    }
 }
 
 pub struct OrbPipeline {

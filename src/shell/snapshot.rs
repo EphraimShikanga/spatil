@@ -15,13 +15,83 @@ use crate::state::SpatilState;
 
 const FRAME_MS: f32 = 1000.0 / 60.0;
 
+/// The time every mockup shows: hour hand at 76 degrees, minute hand at 192.
+const MOCKUP_TIME: f32 = 14.0 * 3600.0 + 32.0 * 60.0;
+
 fn pump(state: &mut SpatilState, event_loop: &mut EventLoop<'static, SpatilState>, wall: Duration) {
-    let until = Instant::now() + wall;
+    pump_with(state, event_loop, wall, |_, _| {});
+}
+
+fn pump_with(
+    state: &mut SpatilState,
+    event_loop: &mut EventLoop<'static, SpatilState>,
+    wall: Duration,
+    mut each: impl FnMut(&mut SpatilState, f32),
+) {
+    let start = Instant::now();
+    let until = start + wall;
     while Instant::now() < until {
         let _ = event_loop.dispatch(Some(Duration::from_millis(1)), state);
+        each(state, start.elapsed().as_secs_f32());
         state.tick_animations(FRAME_MS);
         std::thread::sleep(Duration::from_millis(FRAME_MS as u64));
     }
+}
+
+/// A stand-in voice: syllable-rate swells, never silent, never pinned at full.
+fn speech(t: f32) -> f32 {
+    (0.45 + 0.3 * (t * 9.0).sin() + 0.2 * (t * 23.0 + 1.0).sin()).clamp(0.0, 1.0)
+}
+
+/// Pumps as if the user were present, so ambient never creeps into a state capture.
+fn awake(
+    state: &mut SpatilState,
+    event_loop: &mut EventLoop<'static, SpatilState>,
+    wall: Duration,
+    mut each: impl FnMut(&mut SpatilState, f32),
+) {
+    pump_with(state, event_loop, wall, |s, t| {
+        s.last_input = Instant::now();
+        each(s, t);
+    });
+}
+
+fn agent_states(
+    state: &mut SpatilState,
+    event_loop: &mut EventLoop<'static, SpatilState>,
+    shot: &dyn Fn(&mut SpatilState, &str),
+) {
+    use crate::shell::agent::AgentPhase;
+    state.dispatch_pointer_motion_absolute(450.0, 120.0);
+    let calm = Duration::from_millis(900);
+
+    state.agent.set_phase(AgentPhase::Listening);
+    awake(state, event_loop, calm, |s, t| s.agent.set_levels(speech(t), 0.0));
+    shot(state, "10-listening");
+
+    state.agent.set_levels(0.0, 0.0);
+    state.agent.set_phase(AgentPhase::Thinking);
+    awake(state, event_loop, Duration::from_millis(1250), |_, _| {});
+    shot(state, "11-thinking");
+
+    state.agent.set_phase(AgentPhase::WaitingForYou);
+    awake(state, event_loop, calm, |_, _| {});
+    shot(state, "12-waiting");
+
+    state.agent.set_phase(AgentPhase::Working { step: 1, total: 3 });
+    awake(state, event_loop, calm, |_, _| {});
+    shot(state, "13-working");
+
+    state.agent.set_phase(AgentPhase::Answering);
+    awake(state, event_loop, calm, |s, t| s.agent.set_levels(0.0, speech(t)));
+    shot(state, "14-answering");
+
+    state.agent.set_levels(0.0, 0.0);
+    state.agent.set_phase(AgentPhase::Done);
+    awake(state, event_loop, Duration::from_millis(250), |_, _| {});
+    shot(state, "15-done-sweeping");
+    awake(state, event_loop, Duration::from_millis(1400), |_, _| {});
+    shot(state, "16-done-idle");
 }
 
 pub fn run(out_dir: &Path) {
@@ -59,6 +129,7 @@ pub fn run(out_dir: &Path) {
         config,
     );
     state.preview_orb_corner(Corner::BottomRight);
+    state.freeze_orb_clock(MOCKUP_TIME);
     state.rearrange_layers();
 
     let shot = |state: &mut SpatilState, name: &str| {
@@ -126,4 +197,7 @@ pub fn run(out_dir: &Path) {
     state.last_input = Instant::now() - Duration::from_secs(3600);
     pump(&mut state, &mut event_loop, Duration::from_millis(1500));
     shot(&mut state, "7-idle");
+
+    state.last_input = Instant::now();
+    agent_states(&mut state, &mut event_loop, &shot);
 }

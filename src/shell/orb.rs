@@ -61,6 +61,7 @@ pub struct OrbRuntime {
     drag: Option<OrbDrag>,
     pos: Option<(f32, f32)>,
     pos_velocity: (f32, f32),
+    frozen_clock: Option<f32>,
 }
 
 fn seconds_of_day() -> f32 {
@@ -208,7 +209,7 @@ impl SpatilState {
             return;
         };
 
-        let secs = seconds_of_day();
+        let secs = self.orb.frozen_clock.unwrap_or_else(seconds_of_day);
         let ambient = self.orb.ambient.value.clamp(0.0, 1.0);
         let radius = rect.size.w as f32 * 0.5;
         let flight = flight_pose(
@@ -243,7 +244,6 @@ impl SpatilState {
             ],
             card_radius: radius,
             blend: 0.0,
-            alert: 0.0,
             warn: 0.0,
             facing: self.orb_corner().facing(),
             agent: look,
@@ -369,6 +369,11 @@ impl SpatilState {
         let cy = rect.loc.y as f64 + radius;
         let (dx, dy) = (point.x - cx, point.y - cy);
         dx * dx + dy * dy <= radius * radius
+    }
+
+    /// Stops the clock at `secs` past midnight, so snapshots can be compared with the mockups.
+    pub fn freeze_orb_clock(&mut self, secs: f32) {
+        self.orb.frozen_clock = Some(secs);
     }
 
     pub fn orb_expanded(&self) -> bool {

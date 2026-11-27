@@ -775,22 +775,7 @@ impl WgpuState {
             self.queue.write_buffer(
                 &self.orb_pipeline.uniform_buffer,
                 0,
-                bytemuck::cast_slice(&[OrbUniform {
-                    rect: frame.rect,
-                    screen: [screen_w, screen_h, 0.0, 0.0],
-                    body_color: self.orb.body_color,
-                    accent_color: self.orb.accent_color,
-                    card: frame.card,
-                    seconds_of_day: frame.seconds_of_day,
-                    open: frame.open,
-                    hover: frame.hover,
-                    ambient: frame.ambient,
-                    hand: frame.hand,
-                    dial: frame.dial,
-                    alert: frame.alert,
-                    warn: frame.warn,
-                    shape: [frame.card_radius, frame.blend, frame.facing, 0.0],
-                }]),
+                bytemuck::cast_slice(&[OrbUniform::new(frame, &self.orb, [screen_w, screen_h])]),
             );
         }
 

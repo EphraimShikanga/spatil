@@ -13,8 +13,20 @@ struct OrbUniform {
     dial: f32,
     alert: f32,
     warn: f32,
-    // x: card corner radius px, y: smooth-union blend px, z: dial angle facing the screen.
+    // x: card corner radius px, y: smooth-union blend px, z: dial angle facing the screen, w: focus.
     shape: vec4<f32>,
+    // fold, park, voice, tint
+    agent_a: vec4<f32>,
+    // dim, step alpha, step angle, ring hub
+    agent_b: vec4<f32>,
+    // solid hub, arc alpha, arc fraction, privacy
+    agent_c: vec4<f32>,
+    marks: array<vec4<f32>, 3>,
+    ink: vec4<f32>,
+    hand_ink: vec4<f32>,
+    dark: vec4<f32>,
+    amber: vec4<f32>,
+    quiet: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -23,8 +35,9 @@ var<uniform> orb: OrbUniform;
 const TAU: f32 = 6.28318530718;
 const SECOND_HAND: f32 = 0.86;
 const SHADOW: f32 = 28.0;
-const AMBER: vec3<f32> = vec3<f32>(0.98, 0.66, 0.22);
-const INK: vec3<f32> = vec3<f32>(0.955, 0.965, 0.975);
+// Design units are px at a 56px orb; the shader's face has radius 1.
+const UNIT: f32 = 1.0 / 28.0;
+const MARK_OUTER: f32 = 23.8 * UNIT;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -86,25 +99,41 @@ fn hand_sd(p: vec2<f32>, dir: vec2<f32>, tail: f32, tip: f32, root: f32, point: 
     return length(vec2<f32>(along - h, across)) - half_width;
 }
 
-fn indices_sd(p: vec2<f32>) -> vec2<f32> {
-    let step = TAU / 12.0;
-    let k = round(atan2(p.x, p.y) / step);
-    let dir = dial(k * step);
-    let along = dot(p, dir);
-    let across = abs(dot(p, vec2<f32>(dir.y, -dir.x)));
-    let quarter = (i32(k) % 3) == 0;
-    let inner = select(0.74, 0.66, quarter);
-    let half_width = select(0.02, 0.032, quarter);
-    let outer = 0.85;
-    let q = vec2<f32>(across - half_width, abs(along - (inner + outer) * 0.5) - (outer - inner) * 0.5);
-    let sd = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
-    return vec2<f32>(sd, select(0.0, 1.0, quarter));
+fn to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let hi = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(hi, c * 12.92, c <= vec3<f32>(0.0031308));
 }
 
-fn arc_mask(p: vec2<f32>, centre_angle: f32, half_span: f32) -> f32 {
-    let a = atan2(p.x, p.y) - centre_angle;
-    let wrapped = abs(a - TAU * round(a / TAU));
-    return 1.0 - smoothstep(half_span - 0.06, half_span, wrapped);
+fn to_linear(c: vec3<f32>) -> vec3<f32> {
+    let hi = pow((max(c, vec3<f32>(0.0)) + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(hi, c / 12.92, c <= vec3<f32>(0.04045));
+}
+
+// The design's translucent strokes composite in sRGB, as a browser does; in linear light the
+// same alpha reads several times brighter.
+fn veil(base: vec3<f32>, toward: vec3<f32>, t: f32) -> vec3<f32> {
+    return to_linear(mix(to_srgb(base), to_srgb(toward), clamp(t, 0.0, 1.0)));
+}
+
+// A round-capped stroke along `dir` from radius `inner` to `outer`.
+fn radial_sd(p: vec2<f32>, dir: vec2<f32>, inner: f32, outer: f32, half_width: f32) -> f32 {
+    let along = clamp(dot(p, dir), inner, outer);
+    return length(p - dir * along) - half_width;
+}
+
+// Distance to a round-capped arc of `radius` running clockwise from `start` for `span`.
+fn arc_sd(p: vec2<f32>, radius: f32, start: f32, span: f32) -> f32 {
+    let a = fract((atan2(p.x, p.y) - start) / TAU) * TAU;
+    if (a <= span) {
+        return abs(length(p) - radius);
+    }
+    let ends = min(length(p - dial(start) * radius), length(p - dial(start + span) * radius));
+    return ends;
+}
+
+fn mark_level(k: i32) -> f32 {
+    let i = ((k % 12) + 12) % 12;
+    return orb.marks[i / 4][i % 4];
 }
 
 @vertex
@@ -173,6 +202,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         color = over(color, vec4<f32>(mix(vec3<f32>(0.0), vec3<f32>(1.0), edge_up), rim * mix(0.35, 0.12, edge_up)));
     }
 
+    let fold = orb.agent_a.x;
+    let park = orb.agent_a.y;
+    let voice = orb.agent_a.z;
+    let tint = orb.agent_a.w;
+    let dim = orb.agent_b.x;
+    let ring_hub = orb.agent_b.w;
+    let solid_hub = orb.agent_c.x;
+    let dark = orb.dark.rgb;
+
     let face = fill(d - 1.0, aa);
     if (face > 0.0) {
         // Multiplicative: blending is linear, so an additive lift reads far brighter than it looks.
@@ -180,35 +218,66 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let shade = mix(1.1, 0.88, smoothstep(0.0, 1.0, d));
         var f = vec4<f32>(body * shade * lift * mix(1.0, 0.5, ambient), face * orb.body_color.a);
 
-        let ring = fill(abs(d - 0.965) - 0.012, aa);
-        f = over(f, vec4<f32>(vec3<f32>(1.0), ring * 0.09 * (1.0 - ambient * 0.5)));
+        let ring = fill(abs(d - 27.0 * UNIT) - 0.4 * UNIT, aa);
+        f = vec4<f32>(mix(f.rgb, veil(f.rgb, vec3<f32>(1.0), mix(0.10, 0.07, ambient)), ring), f.a);
 
-        let idx = indices_sd(p);
-        let tick_rgb = mix(vec3<f32>(1.0), lume, ambient);
-        let tick_a = mix(0.34, 0.62, idx.y) * mix(1.0, 0.85, ambient);
-        let tick_glow = exp(-max(idx.x, 0.0) * 90.0) * ambient * 0.25;
-        f = over(f, vec4<f32>(tick_rgb, max(fill(idx.x, aa) * tick_a, tick_glow)));
+        // The twelve marks: hour indices at rest, voice bars from the rim while it listens or speaks.
+        let step = TAU / 12.0;
+        let k = i32(round(atan2(p.x, p.y) / step));
+        let dir = dial(f32(k) * step);
+        let quarter = (k % 3) == 0;
+        let rest_inner = select(20.7, 18.5, quarter) * UNIT;
+        let rest_half = select(0.55, 0.9, quarter) * UNIT;
+        let voice_inner = MARK_OUTER - (2.5 + 12.3 * mark_level(k)) * UNIT;
+        let mark = radial_sd(
+            p,
+            dir,
+            mix(rest_inner, voice_inner, voice),
+            MARK_OUTER,
+            mix(rest_half, 0.95 * UNIT, voice),
+        );
+        let rest_toward = mix(vec3<f32>(1.0), lume, ambient);
+        let rest_alpha = select(0.34, 0.62, quarter) * mix(1.0, 0.7, ambient) * mix(1.0, 0.28, dim);
+        let rest_rgb = veil(f.rgb, rest_toward, rest_alpha);
+        let mark_rgb = mix(rest_rgb, mix(orb.ink.rgb, accent, tint), voice);
+        f = vec4<f32>(mix(f.rgb, mark_rgb, fill(mark, aa)), f.a);
+        let tick_glow = exp(-max(mark, 0.0) * 90.0) * ambient * 0.25 * (1.0 - voice);
+        f = over(f, vec4<f32>(rest_toward, tick_glow));
 
         if (orb.warn > 0.001) {
-            let band = fill(abs(d - 0.93) - 0.035, aa) * arc_mask(p, TAU * 0.5, 0.55);
-            f = over(f, vec4<f32>(AMBER, band * orb.warn));
+            let band = arc_sd(p, 24.5 * UNIT, TAU * 5.0 / 12.0, TAU / 6.0) - 1.3 * UNIT;
+            f = over(f, vec4<f32>(orb.amber.rgb, fill(band, aa) * orb.warn));
+        }
+
+        if (orb.agent_c.y > 0.001) {
+            let band = arc_sd(p, 26.4 * UNIT, 0.0, TAU * orb.agent_c.z) - 1.1 * UNIT;
+            f = over(f, vec4<f32>(accent, fill(band, aa) * orb.agent_c.y));
+        }
+
+        if (orb.agent_b.y > 0.001) {
+            let bright = radial_sd(p, dial(orb.agent_b.z), 16.5 * UNIT, MARK_OUTER, 1.1 * UNIT);
+            f = over(f, vec4<f32>(orb.ink.rgb, fill(bright, aa) * orb.agent_b.y));
         }
 
         let secs = orb.seconds_of_day;
-        let minute = dial(TAU * fract(secs / 3600.0));
-        let hour = dial(TAU * fract(secs / 43200.0));
-        let ink = mix(INK, lume, ambient);
+        // Parking scales the angle, so leaving twelve is always a clockwise sweep to the time.
+        let minute = dial(TAU * fract(secs / 3600.0) * (1.0 - park));
+        let hour = dial(TAU * fract(secs / 43200.0) * (1.0 - park));
+        let ink = mix(orb.hand_ink.rgb, lume, ambient);
+        let reach = 1.0 - fold;
 
-        if (orb.dial > 0.001) {
+        if (orb.dial > 0.001 && reach > 0.001) {
+            let hour_tip = 0.5 * reach;
+            let minute_tip = 0.78 * reach;
             let drop = vec2<f32>(0.0, 0.035);
-            let shadow_h = hand_sd(p + drop, hour, 0.0, 0.5, 0.05, 0.034);
-            let shadow_m = hand_sd(p + drop, minute, -0.1, 0.78, 0.036, 0.022);
+            let shadow_h = hand_sd(p + drop, hour, 0.0, hour_tip, 0.05, 0.034);
+            let shadow_m = hand_sd(p + drop, minute, -0.1 * reach, minute_tip, 0.036, 0.022);
             let hand_shadow = fill(min(shadow_h, shadow_m) - 0.015, 0.06) * (1.0 - ambient);
             f = vec4<f32>(f.rgb * (1.0 - hand_shadow * 0.5), f.a);
 
             let hands = min(
-                hand_sd(p, hour, 0.0, 0.5, 0.05, 0.034),
-                hand_sd(p, minute, -0.1, 0.78, 0.036, 0.022),
+                hand_sd(p, hour, 0.0, hour_tip, 0.05, 0.034),
+                hand_sd(p, minute, -0.1 * reach, minute_tip, 0.036, 0.022),
             );
             let glow = exp(-max(hands, 0.0) * 70.0) * ambient * 0.3;
             f = over(f, vec4<f32>(ink, max(fill(hands, aa), glow) * orb.dial));
@@ -222,8 +291,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             f = over(f, vec4<f32>(accent, fill(min(needle, weight), aa) * orb.hand));
         }
 
-        f = over(f, vec4<f32>(accent, fill(d - 0.075, aa)));
-        f = over(f, vec4<f32>(body * 0.6, fill(d - 0.026, aa)));
+        // One hub morphing between three looks: solid with a dark pin, a ring, all accent.
+        let hub_outer = (2.1 + ring_hub * (3.8 - 2.1) + solid_hub * (2.6 - 2.1)) * UNIT;
+        let hub_inner = (0.75 + ring_hub * (2.4 - 0.75) - solid_hub * 0.75) * UNIT;
+        f = over(f, vec4<f32>(accent, fill(d - hub_outer, aa)));
+        f = over(f, vec4<f32>(dark, fill(d - hub_inner, aa) * smoothstep(0.0, 0.2 * UNIT, hub_inner)));
 
         color = over(color, f);
     }
