@@ -71,10 +71,15 @@ pub fn line_height(size: f32) -> f32 {
 
 /// Flattens an externally-supplied string to one printable line of bounded length.
 pub fn sanitize(input: &str) -> String {
+    sanitize_to(input, MAX_LABEL_CHARS)
+}
+
+pub fn sanitize_to(input: &str, max_chars: usize) -> String {
     let mut out = String::new();
+    let mut count = 0;
     let mut pending_space = false;
     for ch in input.chars() {
-        if out.chars().count() >= MAX_LABEL_CHARS {
+        if count >= max_chars {
             break;
         }
         if ch.is_whitespace() || ch == '\u{2028}' || ch == '\u{2029}' {
@@ -86,9 +91,14 @@ pub fn sanitize(input: &str) -> String {
         }
         if pending_space {
             out.push(' ');
+            count += 1;
             pending_space = false;
+            if count >= max_chars {
+                break;
+            }
         }
         out.push(ch);
+        count += 1;
     }
     out
 }

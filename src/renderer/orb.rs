@@ -95,6 +95,7 @@ pub struct OrbFrame {
     pub warn: f32,
     /// Dial angle pointing from the orb toward the screen, where the alert pip sits.
     pub facing: f32,
+    pub agent: crate::shell::agent::AgentLook,
 }
 
 #[repr(C)]

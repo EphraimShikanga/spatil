@@ -38,6 +38,10 @@ pub struct SpatilCommand {
     pub window_id: Option<u32>,
     #[serde(default)]
     pub args: Vec<f32>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub lines: Vec<String>,
 }
 
 /// `$XDG_RUNTIME_DIR/<name>.sock`, falling back to `/tmp` only if the per-user

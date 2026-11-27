@@ -67,6 +67,25 @@ impl SpatilState {
                 let event = super::protocol::SpatilEvent::with_data("orb_state", self.orb_report());
                 self.broadcast_event(&event);
             }
+            "agent_phase" => {
+                let name = cmd.text.as_deref().unwrap_or("");
+                match crate::shell::agent::AgentPhase::parse(name, &cmd.args) {
+                    Some(phase) => self.agent.set_phase(phase),
+                    None => tracing::warn!("agent_phase needs text: idle|listening|thinking|waiting|working|answering|done; got {cmd:?}"),
+                }
+            }
+            "agent_level" => {
+                let level = |i: usize| cmd.args.get(i).copied().unwrap_or(0.0);
+                self.agent.set_levels(level(0), level(1));
+            }
+            "agent_transcript" => self.agent.set_transcript(cmd.text.as_deref().unwrap_or("")),
+            "agent_answer" => self.agent.set_answer(cmd.text.as_deref().unwrap_or("")),
+            "agent_plan" => self.agent.set_plan(&cmd.lines),
+            "familiar_privacy" => self.agent.privacy = cmd.args.first().is_some_and(|v| *v > 0.5),
+            "familiar_focus" => self.agent.focus = cmd.args.first().is_some_and(|v| *v > 0.5),
+            "familiar_alerts" => {
+                self.agent.alerts = cmd.args.first().map_or(0, |v| v.max(0.0).round() as u32);
+            }
             "show" | "map" => match cmd.window_id {
                 Some(window_id) if self.reveal_window(window_id) => {}
                 Some(window_id) => tracing::warn!(window_id, "show for unknown window_id"),

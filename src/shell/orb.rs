@@ -10,13 +10,18 @@ use crate::scene::animation::spring_step;
 use crate::state::SpatilState;
 
 #[derive(Default, Clone, Copy)]
-struct Eased {
-    value: f32,
+pub struct Eased {
+    pub value: f32,
     velocity: f32,
 }
 
 impl Eased {
-    fn tick(&mut self, target: f32, stiffness: f32, damping: f32, dt: f32) {
+    pub fn snap(&mut self, value: f32) {
+        self.value = value;
+        self.velocity = 0.0;
+    }
+
+    pub fn tick(&mut self, target: f32, stiffness: f32, damping: f32, dt: f32) {
         let (value, velocity) =
             spring_step(self.value, self.velocity, target, stiffness, damping, dt);
         self.value = value.clamp(-0.2, 1.2);
@@ -192,8 +197,10 @@ impl SpatilState {
         let (hovered, expanded) = (self.orb.hovered, self.orb.expanded);
         self.orb.hover.tick(hovered as u8 as f32, stiffness, damping, dt);
         self.orb.open.tick(expanded as u8 as f32, stiffness, damping, dt);
-        let ambient_target = (idle && !hovered && !expanded) as u8 as f32;
+        let busy = self.agent.phase() != crate::shell::agent::AgentPhase::Idle;
+        let ambient_target = (idle && !hovered && !expanded && !busy) as u8 as f32;
         self.orb.ambient.tick(ambient_target, stiffness, damping, dt);
+        let look = self.agent.tick(dt_ms, stiffness, damping);
 
         self.settle_orb(dt);
         let Some(rect) = self.orb_rect() else {
@@ -239,6 +246,7 @@ impl SpatilState {
             alert: 0.0,
             warn: 0.0,
             facing: self.orb_corner().facing(),
+            agent: look,
         });
 
         self.cursor_hidden = flight.hide_real_cursor;
@@ -397,6 +405,7 @@ impl SpatilState {
             "cursor_hidden": self.cursor_hidden,
             "cursor_flying": self.wgpu_state.cursor_frame.is_some(),
             "seconds_of_day": seconds_of_day(),
+            "agent": self.agent.report(),
         })
     }
 
