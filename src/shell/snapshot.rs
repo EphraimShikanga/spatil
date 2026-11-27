@@ -9,6 +9,7 @@ use smithay::reexports::wayland_server::Display;
 
 use crate::config::SpatilConfig;
 use crate::input::drag::BTN_LEFT;
+use crate::renderer::orb::Corner;
 use crate::renderer::snapshot::{self, HEIGHT, Snapshotter, WIDTH};
 use crate::state::SpatilState;
 
@@ -27,7 +28,6 @@ pub fn run(out_dir: &Path) {
     let mut config = SpatilConfig::load();
     config.display.width = WIDTH;
     config.display.height = HEIGHT;
-    config.shell.familiar_corner = "bottom_right".to_string();
 
     crate::text::warm_fonts(|| {});
     while !crate::text::fonts_ready() {
@@ -58,6 +58,7 @@ pub fn run(out_dir: &Path) {
         gpu,
         config,
     );
+    state.preview_orb_corner(Corner::BottomRight);
     state.rearrange_layers();
 
     let shot = |state: &mut SpatilState, name: &str| {

@@ -83,16 +83,6 @@ impl TrayArc {
         )
     }
 
-    /// The arc in the orb shader's terms: radius in orb radii and dial angles, which
-    /// run clockwise from twelve o'clock where screen angles run from three o'clock.
-    fn orbit(&self, orb_radius: f32, reveal: f32) -> [f32; 4] {
-        [
-            self.radius / orb_radius.max(1.0),
-            self.angle(0) + QUARTER,
-            self.angle(self.shown - 1) + QUARTER,
-            reveal,
-        ]
-    }
 }
 
 fn stagger(open: f32, index: usize) -> f32 {
@@ -429,9 +419,6 @@ impl SpatilState {
             self.wgpu_state.gauges.clear();
             return;
         };
-        if let Some(frame) = self.wgpu_state.orb_frame.as_mut() {
-            frame.orbit = arc.orbit(radius, open);
-        }
 
         let mut gauges = Vec::new();
         self.wgpu_state.tray_layout = drawable

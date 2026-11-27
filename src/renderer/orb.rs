@@ -11,6 +11,17 @@ pub enum Corner {
 }
 
 impl Corner {
+    /// Dial angle (clockwise from twelve) pointing from this corner into the screen.
+    pub fn facing(self) -> f32 {
+        let eighth = std::f32::consts::FRAC_PI_4;
+        match self {
+            Self::TopLeft => 3.0 * eighth,
+            Self::TopRight => 5.0 * eighth,
+            Self::BottomRight => 7.0 * eighth,
+            Self::BottomLeft => eighth,
+        }
+    }
+
     pub fn parse(name: &str) -> Option<Self> {
         match name.trim().to_ascii_lowercase().replace('-', "_").as_str() {
             "top_left" | "topleft" => Some(Self::TopLeft),
@@ -74,11 +85,17 @@ pub struct OrbFrame {
     pub ambient: f32,
     pub hand: f32,
     pub dial: f32,
-    /// Orbit the modules ride on: radius in orb radii, first/last dial angle, reveal.
-    pub orbit: [f32; 4],
-    /// Where the cursor sits relative to the dial, softly clamped to the unit disc.
-    pub light: [f32; 2],
-    /// The cursor in screen pixels, real or in flight; modules are lit from it too.
+    /// The control-centre card in pixels; the orb's own rect while closed.
+    pub card: [f32; 4],
+    pub card_radius: f32,
+    /// Smooth-union distance in pixels between the orb disc and the card.
+    pub blend: f32,
+    /// Complications: unread alerts, and any native module in trouble.
+    pub alert: f32,
+    pub warn: f32,
+    /// Dial angle pointing from the orb toward the screen, where the alert pip sits.
+    pub facing: f32,
+    /// The cursor in screen pixels, real or in flight.
     pub cursor: [f32; 2],
 }
 
@@ -89,14 +106,16 @@ pub struct OrbUniform {
     pub screen: [f32; 4],
     pub body_color: [f32; 4],
     pub accent_color: [f32; 4],
-    pub orbit: [f32; 4],
+    pub card: [f32; 4],
     pub seconds_of_day: f32,
     pub open: f32,
     pub hover: f32,
     pub ambient: f32,
     pub hand: f32,
     pub dial: f32,
-    pub light: [f32; 2],
+    pub alert: f32,
+    pub warn: f32,
+    pub shape: [f32; 4],
 }
 
 pub struct OrbPipeline {

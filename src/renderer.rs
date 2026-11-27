@@ -787,14 +787,16 @@ impl WgpuState {
                     screen: [screen_w, screen_h, 0.0, 0.0],
                     body_color: self.orb.body_color,
                     accent_color: self.orb.accent_color,
-                    orbit: frame.orbit,
+                    card: frame.card,
                     seconds_of_day: frame.seconds_of_day,
                     open: frame.open,
                     hover: frame.hover,
                     ambient: frame.ambient,
                     hand: frame.hand,
                     dial: frame.dial,
-                    light: frame.light,
+                    alert: frame.alert,
+                    warn: frame.warn,
+                    shape: [frame.card_radius, frame.blend, frame.facing, 0.0],
                 }]),
             );
         }
