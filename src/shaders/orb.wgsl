@@ -301,10 +301,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     if (orb.alert > 0.001) {
-        let pip_c = dial(orb.shape.z) * 0.86;
-        let pip_d = length(p - pip_c);
-        color = over(color, vec4<f32>(body * 0.5, fill(pip_d - 0.2, aa) * orb.alert));
-        color = over(color, vec4<f32>(accent, fill(pip_d - 0.14, aa) * orb.alert));
+        let focus = orb.shape.w;
+        let pip_d = length(p - dial(orb.shape.z) * (24.04 * UNIT));
+        color = over(color, vec4<f32>(dark, fill(pip_d - 6.0 * UNIT, aa) * orb.alert));
+        color = over(color, vec4<f32>(accent, fill(pip_d - 4.2 * UNIT, aa) * orb.alert * (1.0 - focus)));
+        let hollow = abs(pip_d - 3.4 * UNIT) - 0.7 * UNIT;
+        color = over(color, vec4<f32>(orb.quiet.rgb, fill(hollow, aa) * orb.alert * focus));
+    }
+
+    if (orb.agent_c.w > 0.001) {
+        let light_d = length(p - dial(0.0) * (21.5 * UNIT));
+        color = over(color, vec4<f32>(dark, fill(light_d - 5.4 * UNIT, aa) * orb.agent_c.w));
+        color = over(color, vec4<f32>(orb.amber.rgb, fill(light_d - 3.6 * UNIT, aa) * orb.agent_c.w));
     }
 
     if (color.a < 0.002) {

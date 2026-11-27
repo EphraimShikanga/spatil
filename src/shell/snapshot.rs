@@ -92,6 +92,21 @@ fn agent_states(
     shot(state, "15-done-sweeping");
     awake(state, event_loop, Duration::from_millis(1400), |_, _| {});
     shot(state, "16-done-idle");
+
+    state.agent.alerts = 2;
+    awake(state, event_loop, calm, |_, _| {});
+    shot(state, "17-alert");
+
+    state.agent.focus = true;
+    awake(state, event_loop, calm, |_, _| {});
+    shot(state, "18-focus");
+
+    state.agent.alerts = 0;
+    state.agent.focus = false;
+    state.agent.privacy = true;
+    awake(state, event_loop, calm, |_, _| {});
+    shot(state, "19-privacy");
+    state.agent.privacy = false;
 }
 
 pub fn run(out_dir: &Path) {
