@@ -86,7 +86,11 @@ pub fn run(out_dir: &Path) {
 
     state.dispatch_pointer_button(BTN_LEFT, ButtonState::Pressed);
     state.dispatch_pointer_button(BTN_LEFT, ButtonState::Released);
-    pump(&mut state, &mut event_loop, Duration::from_millis(900));
+    for step in 1..=3 {
+        pump(&mut state, &mut event_loop, Duration::from_millis(60));
+        shot(&mut state, &format!("3-opening-{step}"));
+    }
+    pump(&mut state, &mut event_loop, Duration::from_millis(700));
     shot(&mut state, "3-open");
 
     if let Some((_, r)) = state.module_slots.first().cloned() {

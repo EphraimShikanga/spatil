@@ -109,6 +109,22 @@ pub struct CardLayout {
     pub tray: Vec<[f32; 4]>,
 }
 
+impl CardLayout {
+    fn shift(&mut self, dx: f32, dy: f32) {
+        let mv = |r: &mut [f32; 4]| {
+            r[0] += dx;
+            r[1] += dy;
+        };
+        mv(&mut self.header);
+        self.tiles.iter_mut().for_each(mv);
+        self.destinations.iter_mut().for_each(mv);
+        self.tray.iter_mut().for_each(mv);
+        if let Some(label) = self.tray_label.as_mut() {
+            mv(label);
+        }
+    }
+}
+
 /// Sections stack outward from the orb, so the card is mirrored per corner; the content
 /// inside a section is never mirrored, so Wi-Fi is always top-left and text always reads.
 pub fn layout(corner: Corner, orb: [f32; 4], tray_count: usize) -> CardLayout {
@@ -330,7 +346,7 @@ impl SpatilState {
             .iter()
             .filter(|m| matches!(m.id, ModuleId::Tray(_)) && m.drawable())
             .collect();
-        let card = layout(self.orb_corner(), orb, tray.len());
+        let mut card = layout(self.orb_corner(), orb, tray.len());
 
         let t = ease(open);
         let morph = std::array::from_fn(|i| lerp(orb[i], card.rect[i], t));
@@ -341,10 +357,17 @@ impl SpatilState {
         }
         self.card.rect = Some(morph);
 
-        let alpha = ease((open - 0.55) / 0.45);
+        // Content is pinned to the growing far edge and only appears in the last stretch,
+        // so nothing is ever drawn outside the card.
+        let alpha = ease((t - 0.88) / 0.12);
         if alpha <= 0.01 {
             return;
         }
+        let drift = |m: f32, c: f32, m_far: f32, c_far: f32| (m - c) + (m_far - c_far);
+        card.shift(
+            drift(morph[0], card.rect[0], morph[0] + morph[2], card.rect[0] + card.rect[2]),
+            drift(morph[1], card.rect[1], morph[1] + morph[3], card.rect[1] + card.rect[3]),
+        );
 
         let palette = Palette::new(self.wgpu_state.orb.body_color, self.wgpu_state.orb.accent_color);
         let font = self.config.shell.font.clone();
