@@ -160,7 +160,8 @@ impl SpatilState {
         self.menu.open.take().is_some()
     }
 
-    pub fn tick_menu(&mut self, dt: f32) {
+    pub fn tick_menu(&mut self, dt_ms: f32) {
+        let dt = dt_ms / 1000.0;
         let target = if self.menu.open.is_some() { 1.0 } else { 0.0 };
         let (alpha, velocity) =
             spring_step(self.menu.alpha, self.menu.velocity, target, 240.0, 27.0, dt);

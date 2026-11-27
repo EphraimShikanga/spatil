@@ -63,7 +63,8 @@ impl SpatilState {
         self.tooltip.hovered = module.map(|id| (id, Instant::now()));
     }
 
-    pub fn tick_tooltip(&mut self, dt: f32) {
+    pub fn tick_tooltip(&mut self, dt_ms: f32) {
+        let dt = dt_ms / 1000.0;
         let font_size = self.config.shell.font_size;
         let due = self
             .tooltip
