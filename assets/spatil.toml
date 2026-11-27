@@ -267,6 +267,9 @@ exec = [
 #   "zoom <in|out>" / "reset_view" — move the camera / ease it back to default.
 #   "orbit <left|right|up|down>" — nudge the camera around the world.
 #   "tilt <up|down>" — recline the windows more or less (strata only; live).
+#   "familiar"       — talk to Familiar: hold to talk, let go to send; a tap is
+#                      for typing (not built yet). The design gives it Super+space,
+#                      which is "present" here: rebind one of them to use it.
 #
 # NOTE: defining this table replaces the built-in defaults entirely.
 [keybindings]

@@ -215,4 +215,29 @@ pub fn run(out_dir: &Path) {
 
     state.last_input = Instant::now();
     agent_states(&mut state, &mut event_loop, &shot);
+    gestures(&mut state, &mut event_loop, centre);
+}
+
+fn gestures(
+    state: &mut SpatilState,
+    event_loop: &mut EventLoop<'static, SpatilState>,
+    centre: (f64, f64),
+) {
+    use crate::shell::agent::AgentPhase;
+    state.agent.set_phase(AgentPhase::Idle);
+    state.dispatch_pointer_motion_absolute(centre.0, centre.1);
+    state.dispatch_pointer_button(BTN_LEFT, ButtonState::Pressed);
+    awake(state, event_loop, Duration::from_millis(450), |_, _| {});
+    println!("holding the orb listens: {}", state.agent.phase() == AgentPhase::Listening);
+    state.dispatch_pointer_button(BTN_LEFT, ButtonState::Released);
+    println!("letting go sends: {}", state.agent.phase() == AgentPhase::Thinking);
+
+    state.agent.set_phase(AgentPhase::Idle);
+    let was_open = state.orb_expanded();
+    state.dispatch_pointer_button(BTN_LEFT, ButtonState::Pressed);
+    awake(state, event_loop, Duration::from_millis(120), |_, _| {});
+    state.dispatch_pointer_button(BTN_LEFT, ButtonState::Released);
+    println!("a quick click toggles the card: {}", state.orb_expanded() != was_open);
+    state.close_orb();
+    awake(state, event_loop, Duration::from_millis(500), |_, _| {});
 }

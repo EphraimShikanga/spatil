@@ -74,6 +74,8 @@ pub enum Action {
     Orbit(Direction),
     Tilt(Adjust),
     OrbCorner(Corner),
+    /// Familiar's talk key: hold to talk, tap to type.
+    Familiar,
 }
 
 impl Action {
@@ -115,6 +117,7 @@ impl Action {
             "dismiss" => Some(Action::Dismiss),
             "fullscreen" => Some(Action::Fullscreen),
             "reset_view" => Some(Action::ResetView),
+            "familiar" => Some(Action::Familiar),
             _ => None,
         }
     }
@@ -277,6 +280,7 @@ mod tests {
         assert_eq!(Action::parse("zoom in"), Some(Action::Zoom(Adjust::Increase)));
         assert_eq!(Action::parse("tilt down"), Some(Action::Tilt(Adjust::Decrease)));
         assert_eq!(Action::parse("present"), Some(Action::Present));
+        assert_eq!(Action::parse("familiar"), Some(Action::Familiar));
         assert_eq!(Action::parse("dismiss"), Some(Action::Dismiss));
         assert_eq!(Action::parse("fullscreen"), Some(Action::Fullscreen));
         assert_eq!(Action::parse("reset_view"), Some(Action::ResetView));

@@ -16,6 +16,8 @@ enum Handled {
     Act(Action),
     Menu(Keysym),
     CloseCard,
+    CancelListening,
+    TalkKeyUp,
 }
 
 fn vt_switch_target(sym: Keysym) -> Option<i32> {
@@ -54,6 +56,10 @@ impl SpatilState {
         // A bound press is intercepted (its action returned); releases forward.
         let handled = keyboard.input::<Handled, _>(self, keycode, key_state, serial, time, |data, mods, handle| {
             if key_state != KeyState::Pressed {
+                // The client never saw the talk key go down, so it must not see it come up.
+                if data.is_talk_key(keycode) {
+                    return FilterResult::Intercept(Handled::TalkKeyUp);
+                }
                 return FilterResult::Forward;
             }
             let sym = handle.modified_sym();
@@ -61,6 +67,11 @@ impl SpatilState {
             // instead of reaching whichever client still holds focus underneath.
             if data.menu_is_open() {
                 return FilterResult::Intercept(Handled::Menu(sym));
+            }
+            if data.agent.phase() == crate::shell::agent::AgentPhase::Listening
+                && sym.raw() == keysyms::KEY_Escape
+            {
+                return FilterResult::Intercept(Handled::CancelListening);
             }
             if data.orb_expanded() && sym.raw() == keysyms::KEY_Escape {
                 return FilterResult::Intercept(Handled::CloseCard);
@@ -76,7 +87,12 @@ impl SpatilState {
         });
 
         match handled {
+            Some(Handled::Act(Action::Familiar)) => self.talk_key_down(keycode),
             Some(Handled::Act(action)) => self.run_action(action),
+            Some(Handled::CancelListening) => {
+                self.cancel_listening();
+            }
+            Some(Handled::TalkKeyUp) => self.talk_key_up(),
             Some(Handled::Menu(sym)) => self.menu_key(sym),
             Some(Handled::CloseCard) => self.close_orb(),
             None => {}
@@ -113,6 +129,7 @@ impl SpatilState {
             }
             Action::Tilt(adjust) => self.tilt_windows(adjust.sign() * TILT_STEP_DEGREES),
             Action::OrbCorner(corner) => self.set_orb_corner(corner),
+            Action::Familiar => {}
         }
     }
 

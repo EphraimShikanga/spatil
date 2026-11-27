@@ -44,10 +44,46 @@ fn ramp(v: f32, lo: f32, hi: f32) -> f32 {
     ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
 }
 
+const HOLD_MS: f32 = 300.0;
+
+/// What a press on the orb has turned out to be so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Press {
+    Pending,
+    Hold,
+    Drag,
+}
+
+impl Press {
+    /// Hold and Drag latch: once talking, moving never drags, and a drag never starts talking.
+    pub fn advance(self, held_ms: f32, travelled: f64, can_talk: bool) -> Press {
+        match self {
+            Press::Pending if travelled > TAP_SLOP => Press::Drag,
+            Press::Pending if held_ms >= HOLD_MS && can_talk => Press::Hold,
+            other => other,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Press::Pending => "pending",
+            Press::Hold => "hold",
+            Press::Drag => "drag",
+        }
+    }
+}
+
 struct OrbDrag {
     grab: (f32, f32),
     press_at: Point<f64, Logical>,
-    moved: bool,
+    since: Instant,
+    press: Press,
+}
+
+struct TalkKey {
+    keycode: smithay::input::keyboard::Keycode,
+    since: Instant,
+    held: bool,
 }
 
 #[derive(Default)]
@@ -62,6 +98,7 @@ pub struct OrbRuntime {
     pos: Option<(f32, f32)>,
     pos_velocity: (f32, f32),
     frozen_clock: Option<f32>,
+    talk_key: Option<TalkKey>,
 }
 
 fn seconds_of_day() -> f32 {
@@ -203,6 +240,7 @@ impl SpatilState {
         self.orb.ambient.tick(ambient_target, stiffness, damping, dt);
         let look = self.agent.tick(dt_ms, stiffness, damping);
 
+        self.advance_holds();
         self.settle_orb(dt);
         let Some(rect) = self.orb_rect() else {
             self.clear_orb();
@@ -263,6 +301,57 @@ impl SpatilState {
                 angle: flight.arrow_angle,
                 shrink: flight.arrow_shrink,
             });
+    }
+
+    /// A still pointer sends no motion, so a hold is noticed here rather than in the input path.
+    fn advance_holds(&mut self) {
+        use crate::shell::agent::AgentEvent;
+        let can_talk = self.agent.phase().can_talk();
+        if let Some(drag) = self.orb.drag.as_mut() {
+            let held_ms = drag.since.elapsed().as_secs_f32() * 1000.0;
+            let before = drag.press;
+            drag.press = before.advance(held_ms, 0.0, can_talk);
+            if before == Press::Pending && drag.press == Press::Hold {
+                self.agent.apply(AgentEvent::Hold);
+            }
+        }
+        if let Some(key) = self.orb.talk_key.as_mut()
+            && !key.held
+            && key.since.elapsed().as_secs_f32() * 1000.0 >= HOLD_MS
+            && can_talk
+        {
+            key.held = true;
+            self.agent.apply(AgentEvent::Hold);
+        }
+    }
+
+    pub fn talk_key_down(&mut self, keycode: smithay::input::keyboard::Keycode) {
+        self.orb.talk_key = Some(TalkKey { keycode, since: Instant::now(), held: false });
+    }
+
+    pub fn is_talk_key(&self, keycode: smithay::input::keyboard::Keycode) -> bool {
+        self.orb.talk_key.as_ref().is_some_and(|k| k.keycode == keycode)
+    }
+
+    pub fn talk_key_up(&mut self) {
+        let Some(key) = self.orb.talk_key.take() else {
+            return;
+        };
+        if key.held {
+            self.agent.apply(crate::shell::agent::AgentEvent::Release);
+        } else {
+            tracing::info!("familiar: type mode requested (placeholder; typing is not built yet)");
+        }
+    }
+
+    /// Esc while listening: nothing is sent, and the press or key still held is spent.
+    pub fn cancel_listening(&mut self) -> bool {
+        if !self.agent.apply(crate::shell::agent::AgentEvent::Cancel) {
+            return false;
+        }
+        self.orb.drag = None;
+        self.orb.talk_key = None;
+        true
     }
 
     fn settle_orb(&mut self, dt: f32) {
@@ -399,7 +488,9 @@ impl SpatilState {
             "idle_for_ms": self.last_input.elapsed().as_millis() as u64,
             "corner": self.orb_corner().as_str(),
             "corner_pinned": self.orb.corner.is_some(),
-            "dragging": self.orb.drag.is_some(),
+            "dragging": self.orb.drag.as_ref().is_some_and(|d| d.press == Press::Drag),
+            "gesture": self.orb.drag.as_ref().map(|d| d.press.as_str()),
+            "talk_key_held": self.orb.talk_key.as_ref().map(|k| k.held),
             "settling": self.orb.pos.is_some() && self.orb.drag.is_none(),
             "hovered": self.orb.hovered,
             "expanded": self.orb.expanded,
@@ -428,7 +519,8 @@ impl SpatilState {
                 rect.loc.y as f32 - point.y as f32,
             ),
             press_at: point,
-            moved: false,
+            since: Instant::now(),
+            press: Press::Pending,
         });
         true
     }
@@ -438,21 +530,26 @@ impl SpatilState {
     }
 
     pub fn orb_drag_motion(&mut self, point: Point<f64, Logical>) -> bool {
-        let Some(drag) = &self.orb.drag else {
+        let can_talk = self.agent.phase().can_talk();
+        let Some(drag) = self.orb.drag.as_mut() else {
             return false;
         };
         let (dx, dy) = (point.x - drag.press_at.x, point.y - drag.press_at.y);
-        let moved = drag.moved || dx * dx + dy * dy > TAP_SLOP * TAP_SLOP;
+        let held_ms = drag.since.elapsed().as_secs_f32() * 1000.0;
+        let before = drag.press;
+        drag.press = before.advance(held_ms, (dx * dx + dy * dy).sqrt(), can_talk);
         let target = (point.x as f32 + drag.grab.0, point.y as f32 + drag.grab.1);
-        if !moved {
-            return true;
+        match drag.press {
+            Press::Drag => {}
+            Press::Hold if before == Press::Pending => {
+                self.agent.apply(crate::shell::agent::AgentEvent::Hold);
+                return true;
+            }
+            _ => return true,
         }
 
         let size = self.wgpu_state.orb.size;
         let zone = self.orb_zone();
-        if let Some(drag) = &mut self.orb.drag {
-            drag.moved = true;
-        }
         self.orb.expanded = false;
         self.orb.pos = Some(clamp_orb(target, size, zone));
         self.orb.pos_velocity = (0.0, 0.0);
@@ -460,18 +557,25 @@ impl SpatilState {
     }
 
     pub fn orb_release(&mut self) -> bool {
+        use crate::shell::agent::{AgentEvent, AgentPhase};
         let Some(drag) = self.orb.drag.take() else {
             return false;
         };
-        if !drag.moved {
-            self.orb.expanded = !self.orb.expanded;
-            return true;
-        }
-        if let Some(pos) = self.orb.pos {
-            let half = self.wgpu_state.orb.size * 0.5;
-            let centre = (pos.0 + half, pos.1 + half);
-            let corner = nearest_corner(centre, self.orb_zone());
-            self.set_orb_corner(corner);
+        match drag.press {
+            // A release while listening always sends, however the listening began.
+            Press::Hold | Press::Pending if self.agent.phase() == AgentPhase::Listening => {
+                self.agent.apply(AgentEvent::Release);
+            }
+            Press::Hold => {}
+            Press::Pending => self.orb.expanded = !self.orb.expanded,
+            Press::Drag => {
+                if let Some(pos) = self.orb.pos {
+                    let half = self.wgpu_state.orb.size * 0.5;
+                    let centre = (pos.0 + half, pos.1 + half);
+                    let corner = nearest_corner(centre, self.orb_zone());
+                    self.set_orb_corner(corner);
+                }
+            }
         }
         true
     }
@@ -629,6 +733,39 @@ mod tests {
         ] {
             assert_eq!(Corner::parse(corner.as_str()), Some(corner));
         }
+    }
+
+    #[test]
+    fn a_quick_still_press_is_a_click() {
+        let press = Press::Pending.advance(120.0, 2.0, true);
+        assert_eq!(press, Press::Pending, "released now, this toggles the card");
+    }
+
+    #[test]
+    fn holding_still_for_300ms_talks() {
+        assert_eq!(Press::Pending.advance(299.0, 0.0, true), Press::Pending);
+        assert_eq!(Press::Pending.advance(300.0, 3.0, true), Press::Hold);
+    }
+
+    #[test]
+    fn moving_past_the_slop_first_drags() {
+        assert_eq!(Press::Pending.advance(80.0, TAP_SLOP + 0.5, true), Press::Drag);
+        assert_eq!(
+            Press::Pending.advance(400.0, TAP_SLOP + 0.5, true),
+            Press::Drag,
+            "a press that already travelled is a drag, however long it took",
+        );
+    }
+
+    #[test]
+    fn hold_and_drag_latch() {
+        assert_eq!(Press::Hold.advance(900.0, 200.0, true), Press::Hold, "talking never drags");
+        assert_eq!(Press::Drag.advance(900.0, 0.0, true), Press::Drag, "a drag never talks");
+    }
+
+    #[test]
+    fn a_long_press_stays_a_click_while_the_agent_is_busy() {
+        assert_eq!(Press::Pending.advance(2000.0, 0.0, false), Press::Pending);
     }
 
     #[test]
