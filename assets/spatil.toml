@@ -164,7 +164,12 @@ present_fill = 0.8            # fraction of the screen a presented window covers
 
 # Familiar: the native orb that replaces a taskbar/status bar. It is the system
 # clock, and after `idle_ms` of stillness your mouse cursor glides onto the orb and
-# becomes the sweeping second hand until you touch the mouse again.
+# becomes the sweeping second hand until you touch the mouse again. It stays quiet
+# unless something needs you: an amber arc means a module is in trouble (battery
+# critical, offline). Click it and it opens into the control centre -- time and date,
+# Wi-Fi / Bluetooth / Sound / Battery, Alerts / Calendar / Windows / Map (not built
+# yet; they tell you so), and your background (tray) apps. Escape or a click outside
+# closes it.
 #
 # Familiar is the default, not a requirement. Spatil speaks zwlr_layer_shell_v1, so
 # QuickShell, waybar, ags, eww, wofi and mako all run here unmodified -- launch them
@@ -185,7 +190,7 @@ familiar_corner = "bottom_right"  # top_left | top_right | bottom_left | bottom_
 familiar_size = 56                # diameter in pixels
 familiar_margin = 20              # inset from the screen corner in pixels
 familiar_color = "#12161C"        # orb body
-familiar_accent = "#4A90E2"       # second hand, jewel, orbit, level rims; also tints the lume
+familiar_accent = "#4A90E2"       # second hand, hub, active tiles; also tints the idle glow
 idle_ms = 5000                    # stillness before the orb goes ambient
 spotlight_fill = 0.55             # how much of the view a shell-launched window covers.
                                   # Unlike "present" this never resizes the application --
@@ -194,9 +199,8 @@ spotlight_fill = 0.55             # how much of the view a shell-launched window
 icon_theme = ""                   # tray icon theme; empty = follow your GTK setting,
                                   # then fall back to Adwaita / breeze / Papirus / hicolor
 
-# Text. Hover a module on the orb's arc for ~450ms and its name appears beside it
-# -- the wifi network, the battery estimate, whatever a tray application calls
-# itself. `font` takes a generic family (sans-serif, monospace, serif) or a
+# Text, for the control centre, tooltips and menus. Hover a background app's icon
+# for ~450ms and its name appears. `font` takes a generic family (sans-serif, monospace, serif) or a
 # concrete face name; anything your system has, including non-Latin scripts and
 # colour emoji, since shaping falls back across the whole font database.
 font = "sans-serif"
@@ -208,8 +212,9 @@ font_size = 12
 # position, so the orb keeps telling you it is idle.
 familiar_clock = "analog"          # "analog" | "digital"
 
-# Clicking a native module (wifi, bluetooth, volume, battery) opens the control
-# application you already have installed -- Spatil does not reimplement them.
+# Clicking a status tile (wifi, bluetooth, volume, battery) opens the control
+# application you already have installed -- Spatil does not reimplement them. It opens
+# like a popover: click anywhere outside it and it closes.
 # Leave a value empty to let Spatil pick the first of its defaults that is on your
 # PATH; set one to force a particular tool. If nothing is found the log names what
 # you could install.
