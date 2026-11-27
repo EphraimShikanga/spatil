@@ -158,10 +158,6 @@ impl AgentRuntime {
         self.phase
     }
 
-    pub fn phase_ms(&self) -> f32 {
-        self.phase_ms
-    }
-
     pub fn set_phase(&mut self, phase: AgentPhase) {
         if !phase.same_kind(self.phase) {
             self.phase_ms = 0.0;

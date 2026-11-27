@@ -24,6 +24,7 @@ impl SpatilState {
         let hovered_module = self.module_at(self.pointer_location);
         let on_orb = self.orb_contains(self.pointer_location)
             || self.card_contains(self.pointer_location)
+            || self.banner_contains(self.pointer_location)
             || self.orb_dragging();
         self.set_orb_hover(on_orb);
         self.card_hover(self.pointer_location);
@@ -108,6 +109,12 @@ impl SpatilState {
             return;
         }
         if button_state == ButtonState::Released && self.card_contains(self.pointer_location) {
+            return;
+        }
+        if button_state == ButtonState::Pressed && self.banner_press(self.pointer_location) {
+            return;
+        }
+        if button_state == ButtonState::Released && self.banner_contains(self.pointer_location) {
             return;
         }
         if button_state == ButtonState::Pressed

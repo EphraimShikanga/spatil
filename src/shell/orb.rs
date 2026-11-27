@@ -239,6 +239,7 @@ impl SpatilState {
         let ambient_target = (idle && !hovered && !expanded && !busy) as u8 as f32;
         self.orb.ambient.tick(ambient_target, stiffness, damping, dt);
         let look = self.agent.tick(dt_ms, stiffness, damping);
+        self.tick_banner(dt_ms);
 
         self.advance_holds();
         self.settle_orb(dt);
@@ -502,6 +503,7 @@ impl SpatilState {
             "cursor_flying": self.wgpu_state.cursor_frame.is_some(),
             "seconds_of_day": seconds_of_day(),
             "agent": self.agent.report(),
+            "banner": self.banner_report(),
         })
     }
 

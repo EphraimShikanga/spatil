@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod audio;
+pub mod banner;
 pub mod bluetooth;
 pub mod card;
 pub mod launch;

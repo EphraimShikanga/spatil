@@ -65,11 +65,24 @@ fn agent_states(
     state.dispatch_pointer_motion_absolute(450.0, 120.0);
     let calm = Duration::from_millis(900);
 
+    // VoiceProto's sample conversation.
+    let said = "Group my terminal and browser into a research cluster, push it back, and bring my editor to me";
+    state.agent.set_plan(&[
+        "Group kitty and Firefox into a new constellation, Research".to_string(),
+        "Push Research two layers back".to_string(),
+        "Bring Code (orb.wgsl) in front of you".to_string(),
+    ]);
+    state.agent.set_answer("Done. Research is behind you, Code is in front.");
+    state.agent.set_transcript(&said[..62]);
+
     state.agent.set_phase(AgentPhase::Listening);
+    awake(state, event_loop, Duration::from_millis(90), |s, t| s.agent.set_levels(speech(t), 0.0));
+    shot(state, "10-listening-opening");
     awake(state, event_loop, calm, |s, t| s.agent.set_levels(speech(t), 0.0));
     shot(state, "10-listening");
 
     state.agent.set_levels(0.0, 0.0);
+    state.agent.set_transcript(said);
     state.agent.set_phase(AgentPhase::Thinking);
     awake(state, event_loop, Duration::from_millis(1250), |_, _| {});
     shot(state, "11-thinking");
@@ -77,6 +90,11 @@ fn agent_states(
     state.agent.set_phase(AgentPhase::WaitingForYou);
     awake(state, event_loop, calm, |_, _| {});
     shot(state, "12-waiting");
+    state.preview_orb_corner(Corner::TopLeft);
+    awake(state, event_loop, calm, |_, _| {});
+    shot(state, "12-waiting-top-left");
+    state.preview_orb_corner(Corner::BottomRight);
+    awake(state, event_loop, calm, |_, _| {});
 
     state.agent.set_phase(AgentPhase::Working { step: 1, total: 3 });
     awake(state, event_loop, calm, |_, _| {});
@@ -240,4 +258,26 @@ fn gestures(
     println!("a quick click toggles the card: {}", state.orb_expanded() != was_open);
     state.close_orb();
     awake(state, event_loop, Duration::from_millis(500), |_, _| {});
+
+    use crate::shell::banner::BannerButton;
+    let click = |state: &mut SpatilState, r: [f32; 4]| {
+        state.dispatch_pointer_motion_absolute((r[0] + r[2] * 0.5) as f64, (r[1] + r[3] * 0.5) as f64);
+        state.dispatch_pointer_button(BTN_LEFT, ButtonState::Pressed);
+        state.dispatch_pointer_button(BTN_LEFT, ButtonState::Released);
+    };
+    state.agent.set_phase(AgentPhase::WaitingForYou);
+    awake(state, event_loop, Duration::from_millis(900), |_, _| {});
+    if let Some(r) = state.banner_button(BannerButton::DoIt) {
+        click(state, r);
+    }
+    println!(
+        "Do it starts working: {}",
+        matches!(state.agent.phase(), AgentPhase::Working { step: 0, total: 3 })
+    );
+    state.agent.set_phase(AgentPhase::Answering);
+    awake(state, event_loop, Duration::from_millis(900), |_, _| {});
+    if let Some(r) = state.banner_button(BannerButton::Undo) {
+        click(state, r);
+    }
+    println!("Undo ends the answer: {}", state.agent.phase() == AgentPhase::Done);
 }

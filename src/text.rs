@@ -145,6 +145,54 @@ pub fn fit(text: &str, font: &str, size: f32, weight: u16, max_width: f32) -> (S
     (fitted, width)
 }
 
+/// Greedy word wrap to `max_width`; the last of `max_lines` is ellipsised if text remains.
+pub fn wrap(text: &str, font: &str, size: f32, weight: u16, max_width: f32, max_lines: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    let mut words = text.split(' ').filter(|w| !w.is_empty()).peekable();
+    while let Some(word) = words.next() {
+        let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+        if line.is_empty() || measure(&candidate, font, size, weight) <= max_width {
+            line = candidate;
+            continue;
+        }
+        if lines.len() + 1 == max_lines {
+            let rest: Vec<&str> = std::iter::once(word).chain(words).collect();
+            let (last, _) = fit(&format!("{line} {}", rest.join(" ")), font, size, weight, max_width);
+            lines.push(last);
+            return lines;
+        }
+        lines.push(std::mem::replace(&mut line, word.to_string()));
+    }
+    if !line.is_empty() {
+        let (last, _) = fit(&line, font, size, weight, max_width);
+        lines.push(last);
+    }
+    lines
+}
+
+/// The longest tail of `text` that fits `max_width`, so the newest words stay visible.
+pub fn fit_tail(text: &str, font: &str, size: f32, weight: u16, max_width: f32) -> (String, f32) {
+    let full = measure(text, font, size, weight);
+    if full <= max_width {
+        return (text.to_string(), full);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        let candidate: String = chars[chars.len() - mid..].iter().collect();
+        if measure(&candidate, font, size, weight) <= max_width {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let tail: String = chars[chars.len() - lo..].iter().collect();
+    let width = measure(&tail, font, size, weight);
+    (tail, width)
+}
+
 /// Glyph positions relative to a pen at the origin, baseline at `ascent`.
 pub fn shape(text: &str, font: &str, size: f32, weight: u16) -> ShapedText {
     if text.is_empty() || !fonts_available() {
@@ -290,8 +338,63 @@ fn family_of(name: &str) -> Family<'_> {
     }
 }
 
+/// CSS font-weight fallback: a family without the asked weight uses its nearest one, heavier
+/// first above 500, lighter first below 400, rather than letting fontdb switch family.
+pub fn nearest_weight(available: &[u16], wanted: u16) -> u16 {
+    if available.is_empty() || available.contains(&wanted) {
+        return wanted;
+    }
+    let mut lighter: Vec<u16> = available.iter().copied().filter(|w| *w < wanted).collect();
+    let mut heavier: Vec<u16> = available.iter().copied().filter(|w| *w > wanted).collect();
+    lighter.sort_unstable_by(|a, b| b.cmp(a));
+    heavier.sort_unstable();
+    let pick = if (400..=500).contains(&wanted) {
+        heavier.iter().find(|w| **w <= 500).or(lighter.first()).or(heavier.first())
+    } else if wanted < 400 {
+        lighter.first().or(heavier.first())
+    } else {
+        heavier.first().or(lighter.first())
+    };
+    pick.copied().unwrap_or(wanted)
+}
+
+/// The family regular Latin text really lands on; a generic name can map to an absent family.
+fn landed_family(fs: &mut FontSystem, font: &str) -> String {
+    let mut buffer = Buffer::new(fs, Metrics::new(16.0, 20.0));
+    let attrs = Attrs::new().family(family_of(font)).weight(Weight(REGULAR));
+    buffer.set_text(fs, "Ag", &attrs, Shaping::Advanced, None);
+    buffer.shape_until_scroll(fs, false);
+    let id = buffer.layout_runs().flat_map(|run| run.glyphs.iter()).map(|g| g.font_id).next();
+    id.and_then(|id| fs.db().face(id))
+        .and_then(|face| face.families.first().map(|(name, _)| name.clone()))
+        .unwrap_or_else(|| fs.db().family_name(&family_of(font)).to_string())
+}
+
+fn resolve_weight(fs: &mut FontSystem, font: &str, wanted: u16) -> u16 {
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<(String, u16), u16>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let key = (font.to_string(), wanted);
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).copied()) {
+        return hit;
+    }
+    let family = landed_family(fs, font);
+    let available: Vec<u16> = fs
+        .db()
+        .faces()
+        .filter(|f| f.style == cosmic_text::Style::Normal)
+        .filter(|f| f.families.iter().any(|(name, _)| name.eq_ignore_ascii_case(&family)))
+        .map(|f| f.weight.0)
+        .collect();
+    let resolved = nearest_weight(&available, wanted);
+    if let Ok(mut c) = cache.lock() {
+        c.insert(key, resolved);
+    }
+    resolved
+}
+
 fn shape_line(fs: &mut FontSystem, text: &str, font: &str, size: f32, weight: u16) -> Buffer {
     let size = size.max(1.0);
+    let weight = resolve_weight(fs, font, weight);
     let mut buffer = Buffer::new(fs, Metrics::new(size, line_height(size)));
     buffer.set_wrap(fs, Wrap::None);
     buffer.set_size(fs, None, Some(size * 4.0));
@@ -307,6 +410,16 @@ mod tests {
 
     const FONT: &str = "sans-serif";
     const SIZE: f32 = 13.0;
+
+    #[test]
+    fn a_missing_weight_falls_back_the_way_css_does() {
+        let noto = [100, 300, 400, 500, 700, 900];
+        assert_eq!(nearest_weight(&noto, 600), 700, "semibold without a semibold face is bold");
+        assert_eq!(nearest_weight(&noto, 500), 500);
+        assert_eq!(nearest_weight(&[300, 400, 700], 500), 400, "500 looks lighter before heavier");
+        assert_eq!(nearest_weight(&[100, 700], 200), 100);
+        assert_eq!(nearest_weight(&[], 600), 600);
+    }
 
     fn ensure_fonts() {
         let _ = FONT_SYSTEM.set(Mutex::new(FontSystem::new()));

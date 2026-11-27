@@ -190,7 +190,7 @@ fn ease(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn inside(rect: [f32; 4], point: Point<f64, Logical>) -> bool {
+pub(crate) fn inside(rect: [f32; 4], point: Point<f64, Logical>) -> bool {
     let (x, y) = (point.x as f32, point.y as f32);
     x >= rect[0] && x < rect[0] + rect[2] && y >= rect[1] && y < rect[1] + rect[3]
 }
@@ -210,7 +210,7 @@ fn lighten(linear: [f32; 4], t: f32) -> [f32; 4] {
     [f(linear[0]), f(linear[1]), f(linear[2]), linear[3]]
 }
 
-fn with_alpha(mut color: [f32; 4], alpha: f32) -> [f32; 4] {
+pub(crate) fn with_alpha(mut color: [f32; 4], alpha: f32) -> [f32; 4] {
     color[3] *= alpha;
     color
 }
