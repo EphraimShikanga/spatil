@@ -2,12 +2,14 @@ use std::cell::RefCell;
 use std::sync::{Mutex, OnceLock};
 
 use cosmic_text::{
-    Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Wrap,
+    Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight,
+    Wrap,
 };
 
 pub const MAX_LABEL_CHARS: usize = 256;
 const ELLIPSIS: char = '…';
 const LINE_HEIGHT: f32 = 1.25;
+pub const REGULAR: u16 = 400;
 
 static FONT_SYSTEM: OnceLock<Mutex<FontSystem>> = OnceLock::new();
 
@@ -91,12 +93,12 @@ pub fn sanitize(input: &str) -> String {
     out
 }
 
-pub fn measure(text: &str, font: &str, size: f32) -> f32 {
+pub fn measure(text: &str, font: &str, size: f32, weight: u16) -> f32 {
     if text.is_empty() || !fonts_available() {
         return 0.0;
     }
     with_font_system(|fs| {
-        shape_line(fs, text, font, size)
+        shape_line(fs, text, font, size, weight)
             .layout_runs()
             .map(|run| run.line_w)
             .fold(0.0_f32, f32::max)
@@ -105,16 +107,16 @@ pub fn measure(text: &str, font: &str, size: f32) -> f32 {
 }
 
 /// Tail-truncates with an ellipsis to fit `max_width`; empty when not even that fits.
-pub fn fit(text: &str, font: &str, size: f32, max_width: f32) -> (String, f32) {
+pub fn fit(text: &str, font: &str, size: f32, weight: u16, max_width: f32) -> (String, f32) {
     if !fonts_available() {
         return (String::new(), 0.0);
     }
-    let full = measure(text, font, size);
+    let full = measure(text, font, size, weight);
     if full <= max_width {
         return (text.to_string(), full);
     }
     let ellipsis = ELLIPSIS.to_string();
-    if measure(&ellipsis, font, size) > max_width {
+    if measure(&ellipsis, font, size, weight) > max_width {
         return (String::new(), 0.0);
     }
     let chars: Vec<char> = text.chars().collect();
@@ -122,24 +124,24 @@ pub fn fit(text: &str, font: &str, size: f32, max_width: f32) -> (String, f32) {
     while lo + 1 < hi {
         let mid = (lo + hi) / 2;
         let candidate: String = chars[..mid].iter().collect::<String>() + &ellipsis;
-        if measure(&candidate, font, size) <= max_width {
+        if measure(&candidate, font, size, weight) <= max_width {
             lo = mid;
         } else {
             hi = mid;
         }
     }
     let fitted: String = chars[..lo].iter().collect::<String>() + &ellipsis;
-    let width = measure(&fitted, font, size);
+    let width = measure(&fitted, font, size, weight);
     (fitted, width)
 }
 
 /// Glyph positions relative to a pen at the origin, baseline at `ascent`.
-pub fn shape(text: &str, font: &str, size: f32) -> ShapedText {
+pub fn shape(text: &str, font: &str, size: f32, weight: u16) -> ShapedText {
     if text.is_empty() || !fonts_available() {
         return ShapedText::default();
     }
     with_font_system(|fs| {
-        let mut buffer = shape_line(fs, text, font, size);
+        let mut buffer = shape_line(fs, text, font, size, weight);
         let (ascent, _descent) = buffer
             .line_layout(fs, 0)
             .and_then(|lines| lines.first())
@@ -242,7 +244,7 @@ pub fn probe(font: &str, size: f32) {
         "العربية",
         "emoji 🔋📶",
     ] {
-        let shaped = shape(sample, font, size);
+        let shaped = shape(sample, font, size, REGULAR);
         let colored = shaped
             .glyphs
             .iter()
@@ -257,8 +259,8 @@ pub fn probe(font: &str, size: f32) {
     }
 
     let long = "A network name far too long to fit on the arc beside the orb";
-    let budget = measure(long, font, size) / 3.0;
-    let (fitted, width) = fit(long, font, size, budget);
+    let budget = measure(long, font, size, REGULAR) / 3.0;
+    let (fitted, width) = fit(long, font, size, REGULAR, budget);
     println!("ellipsised to {width:.1}px (budget {budget:.1}): {fitted:?}");
 }
 
@@ -278,12 +280,12 @@ fn family_of(name: &str) -> Family<'_> {
     }
 }
 
-fn shape_line(fs: &mut FontSystem, text: &str, font: &str, size: f32) -> Buffer {
+fn shape_line(fs: &mut FontSystem, text: &str, font: &str, size: f32, weight: u16) -> Buffer {
     let size = size.max(1.0);
     let mut buffer = Buffer::new(fs, Metrics::new(size, line_height(size)));
     buffer.set_wrap(fs, Wrap::None);
     buffer.set_size(fs, None, Some(size * 4.0));
-    let attrs = Attrs::new().family(family_of(font));
+    let attrs = Attrs::new().family(family_of(font)).weight(Weight(weight));
     buffer.set_text(fs, text, &attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(fs, false);
     buffer
@@ -322,7 +324,7 @@ mod tests {
 
     #[test]
     fn measure_empty_is_zero_without_touching_fonts() {
-        assert_eq!(measure("", FONT, SIZE), 0.0);
+        assert_eq!(measure("", FONT, SIZE, REGULAR), 0.0);
     }
 
     #[test]
@@ -331,8 +333,8 @@ mod tests {
         if !fonts_available() {
             return;
         }
-        let short = measure("i", FONT, SIZE);
-        let long = measure("iiiiiiiiii", FONT, SIZE);
+        let short = measure("i", FONT, SIZE, REGULAR);
+        let long = measure("iiiiiiiiii", FONT, SIZE, REGULAR);
         assert!(short > 0.0);
         assert!(long > short);
     }
@@ -343,7 +345,7 @@ mod tests {
         if !fonts_available() {
             return;
         }
-        let (text, width) = fit("Wi-Fi", FONT, SIZE, 10_000.0);
+        let (text, width) = fit("Wi-Fi", FONT, SIZE, REGULAR, 10_000.0);
         assert_eq!(text, "Wi-Fi");
         assert!(width > 0.0);
     }
@@ -355,8 +357,8 @@ mod tests {
             return;
         }
         let long = "A network name far too long for the arc to show in full";
-        let budget = measure(long, FONT, SIZE) / 2.0;
-        let (text, width) = fit(long, FONT, SIZE, budget);
+        let budget = measure(long, FONT, SIZE, REGULAR) / 2.0;
+        let (text, width) = fit(long, FONT, SIZE, REGULAR, budget);
         assert!(text.ends_with(ELLIPSIS));
         assert!(text.chars().count() < long.chars().count());
         assert!(width <= budget);
@@ -368,7 +370,7 @@ mod tests {
         if !fonts_available() {
             return;
         }
-        assert_eq!(fit("Battery", FONT, SIZE, 0.5), (String::new(), 0.0));
+        assert_eq!(fit("Battery", FONT, SIZE, REGULAR, 0.5), (String::new(), 0.0));
     }
 
     #[test]
@@ -377,7 +379,7 @@ mod tests {
         if !fonts_available() {
             return;
         }
-        let shaped = shape("abc", FONT, SIZE);
+        let shaped = shape("abc", FONT, SIZE, REGULAR);
         assert_eq!(shaped.glyphs.len(), 3);
         assert!(shaped.width > 0.0);
         assert!(shaped.ascent > 0.0);
@@ -391,7 +393,7 @@ mod tests {
         if !fonts_available() {
             return;
         }
-        let shaped = shape("H", FONT, SIZE);
+        let shaped = shape("H", FONT, SIZE, REGULAR);
         let glyph = shaped.glyphs.first().expect("one glyph");
         let Some(image) = rasterize(glyph.key) else {
             return;
@@ -402,7 +404,7 @@ mod tests {
 
     #[test]
     fn everything_degrades_to_empty_without_a_font_system() {
-        assert_eq!(measure("", FONT, SIZE), 0.0);
-        assert!(shape("", FONT, SIZE).glyphs.is_empty());
+        assert_eq!(measure("", FONT, SIZE, REGULAR), 0.0);
+        assert!(shape("", FONT, SIZE, REGULAR).glyphs.is_empty());
     }
 }

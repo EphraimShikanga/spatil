@@ -14,6 +14,7 @@ const SHADOW_DROP: f32 = 5.0;
 
 const SURFACE: u32 = 0u;
 const HIGHLIGHT: u32 = 1u;
+const RULE: u32 = 2u;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -22,6 +23,7 @@ struct VertexOutput {
     @location(2) radius: f32,
     @location(3) alpha: f32,
     @location(4) @interpolate(flat) kind: u32,
+    @location(5) fill: vec4<f32>,
 };
 
 fn quad_corner(vertex_index: u32) -> vec2<f32> {
@@ -44,6 +46,7 @@ fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
     @location(0) rect: vec4<f32>,
     @location(1) params: vec4<f32>,
+    @location(2) fill: vec4<f32>,
 ) -> VertexOutput {
     let kind = u32(params.z + 0.5);
     // Surfaces grow their quad so the shadow has somewhere to fall.
@@ -64,6 +67,7 @@ fn vs_main(
     out.radius = params.x;
     out.alpha = params.y;
     out.kind = kind;
+    out.fill = fill;
     return out;
 }
 
@@ -111,8 +115,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let notch_d = rounded_box(notch_c, vec2<f32>(1.5, in.half_size.y * 0.42), 1.5);
         let notch = 1.0 - smoothstep(-aa, aa, notch_d);
         color = over(color, vec4<f32>(panel.notch.rgb, panel.notch.a * notch));
-    } else {
+    } else if (in.kind == RULE) {
         color = vec4<f32>(1.0, 1.0, 1.0, 0.09 * inside);
+    } else {
+        color = vec4<f32>(in.fill.rgb, in.fill.a * inside);
     }
 
     let a = color.a * in.alpha;

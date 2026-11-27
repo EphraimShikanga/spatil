@@ -18,6 +18,8 @@ pub enum PanelKind {
     Highlight = 1,
     /// A hairline separator.
     Rule = 2,
+    /// A flat rounded shape in the instance's own colour: tiles, chips, bars, badges.
+    Fill = 3,
 }
 
 #[repr(C)]
@@ -25,11 +27,12 @@ pub enum PanelKind {
 pub struct PanelInstance {
     pub rect: [f32; 4],
     pub params: [f32; 4],
+    pub color: [f32; 4],
 }
 
 impl PanelInstance {
-    const ATTRIBS: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
+    const ATTRIBS: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -43,6 +46,15 @@ impl PanelInstance {
         Self {
             rect,
             params: [radius, alpha, kind as u8 as f32, 0.0],
+            color: [0.0; 4],
+        }
+    }
+
+    pub fn fill(rect: [f32; 4], radius: f32, color: [f32; 4]) -> Self {
+        Self {
+            rect,
+            params: [radius, 1.0, PanelKind::Fill as u8 as f32, 0.0],
+            color,
         }
     }
 }

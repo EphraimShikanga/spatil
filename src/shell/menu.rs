@@ -86,7 +86,7 @@ fn layout(
         if node.separator {
             continue;
         }
-        let text_w = crate::text::measure(&node.label, font, font_size);
+        let text_w = crate::text::measure(&node.label, font, font_size, crate::text::REGULAR);
         width = width.max(text_w + GUTTER + PAD_X * 2.0 + GUTTER);
     }
     width = width.min(MAX_WIDTH);
@@ -342,6 +342,7 @@ impl SpatilState {
                         x: rect[0] + PAD_X,
                         y: baseline_y,
                         size: font_size,
+                        weight: crate::text::REGULAR,
                         color,
                     });
                 }
@@ -352,16 +353,18 @@ impl SpatilState {
                 x: rect[0] + PAD_X + GUTTER,
                 y: baseline_y,
                 size: font_size,
+                weight: crate::text::REGULAR,
                 color,
             });
 
             if node.submenu {
-                let arrow_w = crate::text::measure(ARROW, &self.config.shell.font, font_size);
+                let arrow_w = crate::text::measure(ARROW, &self.config.shell.font, font_size, crate::text::REGULAR);
                 runs.push(TextRun {
                     text: ARROW.to_string(),
                     x: rect[0] + rect[2] - PAD_X - arrow_w,
                     y: baseline_y,
                     size: font_size,
+                    weight: crate::text::REGULAR,
                     color,
                 });
             }

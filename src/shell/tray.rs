@@ -372,6 +372,8 @@ impl SpatilState {
     }
 
     pub fn tick_modules(&mut self) {
+        self.wgpu_state.panels.clear();
+        self.wgpu_state.text_runs.clear();
         for key in std::mem::take(&mut self.tray.stale_icons) {
             self.wgpu_state.remove_tray_icon(&ModuleId::Tray(key).key());
         }

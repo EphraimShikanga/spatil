@@ -42,6 +42,7 @@ pub struct TextRun {
     pub x: f32,
     pub y: f32,
     pub size: f32,
+    pub weight: u16,
     pub color: [f32; 4],
 }
 

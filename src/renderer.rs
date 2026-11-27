@@ -145,12 +145,16 @@ pub struct WgpuState {
     pub gauge_pipeline: GaugePipeline,
     pub gauges: Vec<GaugeInstance>,
     pub panel_pipeline: PanelPipeline,
+    /// HUD drawn in two layers, each panels-then-text: the card below, tooltip and menus above.
     pub panels: Vec<PanelInstance>,
+    pub overlay_panels: Vec<PanelInstance>,
     pub text_pipeline: TextPipeline,
     pub text_runs: Vec<TextRun>,
+    pub overlay_runs: Vec<TextRun>,
     pub font: String,
     text_glyphs: Vec<GlyphInstance>,
-    text_mask_count: u32,
+    /// Glyph counts in `text_glyphs` order: base mask, base colour, overlay mask, overlay colour.
+    text_spans: [u32; 4],
     pub camera: Camera,
     pub camera_controller: CameraController,
     pub scene_mode: SceneMode,
@@ -307,11 +311,13 @@ impl WgpuState {
             gauges: Vec::new(),
             panel_pipeline,
             panels: Vec::new(),
+            overlay_panels: Vec::new(),
             text_pipeline,
             text_runs: Vec::new(),
+            overlay_runs: Vec::new(),
             font: config.shell.font.clone(),
             text_glyphs: Vec::new(),
-            text_mask_count: 0,
+            text_spans: [0; 4],
             camera,
             camera_controller: CameraController::default(),
             scene_mode,
@@ -423,29 +429,41 @@ impl WgpuState {
 
     fn build_text_glyphs(&mut self) {
         self.text_glyphs.clear();
-        self.text_mask_count = 0;
-        if self.text_runs.is_empty() || !crate::text::fonts_ready() {
+        self.text_spans = [0; 4];
+        if (self.text_runs.is_empty() && self.overlay_runs.is_empty()) || !crate::text::fonts_ready() {
             return;
         }
-        let runs = std::mem::take(&mut self.text_runs);
+        let base = std::mem::take(&mut self.text_runs);
+        let overlay = std::mem::take(&mut self.overlay_runs);
         for attempt in 0..2 {
             let resets = self.text_pipeline.atlas.resets();
-            self.collect_glyphs(&runs);
+            let (base_mask, base_color) = self.collect_glyphs(&base);
+            let (overlay_mask, overlay_color) = self.collect_glyphs(&overlay);
             // A reset mid-build repacks the atlas under UVs already collected,
-            // so the whole run has to be rebuilt against the cleared atlas.
+            // so the whole frame has to be rebuilt against the cleared atlas.
             if self.text_pipeline.atlas.resets() == resets {
+                self.text_spans = [
+                    base_mask.len() as u32,
+                    base_color.len() as u32,
+                    overlay_mask.len() as u32,
+                    overlay_color.len() as u32,
+                ];
+                self.text_glyphs = base_mask;
+                self.text_glyphs.extend(base_color);
+                self.text_glyphs.extend(overlay_mask);
+                self.text_glyphs.extend(overlay_color);
                 break;
             }
             if attempt == 1 {
                 tracing::warn!("text exceeds the glyph atlas in a single frame; dropping it");
-                self.text_glyphs.clear();
-                self.text_mask_count = 0;
             }
         }
-        self.text_runs = runs;
+        self.text_runs = base;
+        self.overlay_runs = overlay;
     }
 
-    fn collect_glyphs(&mut self, runs: &[TextRun]) {
+    /// Shapes `runs` into (mask glyphs, colour glyphs); the two need different atlas views.
+    fn collect_glyphs(&mut self, runs: &[TextRun]) -> (Vec<GlyphInstance>, Vec<GlyphInstance>) {
         let font = std::mem::take(&mut self.font);
         let mut mask: Vec<GlyphInstance> = Vec::new();
         let mut colored: Vec<GlyphInstance> = Vec::new();
@@ -453,7 +471,7 @@ impl WgpuState {
             if run.text.is_empty() || run.color[3] <= 0.0 {
                 continue;
             }
-            let shaped = crate::text::shape(&run.text, &font, run.size);
+            let shaped = crate::text::shape(&run.text, &font, run.size, run.weight);
             let origin_x = run.x.round();
             let baseline = (run.y + shaped.ascent).round();
             for glyph in &shaped.glyphs {
@@ -482,9 +500,7 @@ impl WgpuState {
             }
         }
         self.font = font;
-        self.text_mask_count = mask.len() as u32;
-        self.text_glyphs = mask;
-        self.text_glyphs.extend(colored);
+        (mask, colored)
     }
 
     fn atlas_entry(&mut self, key: cosmic_text::CacheKey) -> Option<text::AtlasEntry> {
@@ -824,7 +840,9 @@ impl WgpuState {
             self.gauges = gauges;
         }
 
-        if !self.panels.is_empty() {
+        let panel_split = self.panels.len() as u32;
+        let panel_total = panel_split + self.overlay_panels.len() as u32;
+        if panel_total > 0 {
             let accent = self.orb.accent_color;
             let body = self.orb.body_color;
             self.queue.write_buffer(
@@ -837,9 +855,10 @@ impl WgpuState {
                     tint: [accent[0], accent[1], accent[2], 0.16],
                 }]),
             );
-            let panels = std::mem::take(&mut self.panels);
+            let mut panels = Vec::with_capacity(panel_total as usize);
+            panels.extend_from_slice(&self.panels);
+            panels.extend_from_slice(&self.overlay_panels);
             self.panel_pipeline.upload(&self.device, &self.queue, &panels);
-            self.panels = panels;
         }
 
         if !self.text_glyphs.is_empty() {
@@ -1071,6 +1090,34 @@ impl WgpuState {
                 render_pass.draw(0..6, 0..self.gauges.len() as u32);
             }
 
+            let [base_mask, base_color, overlay_mask, overlay_color] = self.text_spans;
+            let draw_panels = |pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>| {
+                if range.is_empty() {
+                    return;
+                }
+                pass.set_pipeline(&self.panel_pipeline.pipeline);
+                pass.set_bind_group(0, &self.panel_pipeline.uniform_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.panel_pipeline.instances.slice(..));
+                pass.draw(0..6, range);
+            };
+            let draw_text = |pass: &mut wgpu::RenderPass<'_>, start: u32, mask: u32, color: u32| {
+                if mask + color == 0 {
+                    return;
+                }
+                pass.set_pipeline(&self.text_pipeline.pipeline);
+                pass.set_vertex_buffer(0, self.text_pipeline.instances.slice(..));
+                if mask > 0 {
+                    pass.set_bind_group(0, &self.text_pipeline.mask_bind_group, &[]);
+                    pass.draw(0..6, start..start + mask);
+                }
+                if color > 0 {
+                    pass.set_bind_group(0, &self.text_pipeline.color_bind_group, &[]);
+                    pass.draw(0..6, start + mask..start + mask + color);
+                }
+            };
+
+            draw_panels(&mut render_pass, 0..panel_split);
+
             if !tray_list.is_empty() {
                 render_pass.set_pipeline(&self.hud_pipeline.pipeline);
                 render_pass.set_vertex_buffer(0, self.quad_pipeline.vertex_buffer.slice(..));
@@ -1084,27 +1131,9 @@ impl WgpuState {
                 }
             }
 
-            if !self.panels.is_empty() {
-                render_pass.set_pipeline(&self.panel_pipeline.pipeline);
-                render_pass.set_bind_group(0, &self.panel_pipeline.uniform_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.panel_pipeline.instances.slice(..));
-                render_pass.draw(0..6, 0..self.panels.len() as u32);
-            }
-
-            if !self.text_glyphs.is_empty() {
-                let mask = self.text_mask_count;
-                let total = self.text_glyphs.len() as u32;
-                render_pass.set_pipeline(&self.text_pipeline.pipeline);
-                render_pass.set_vertex_buffer(0, self.text_pipeline.instances.slice(..));
-                if mask > 0 {
-                    render_pass.set_bind_group(0, &self.text_pipeline.mask_bind_group, &[]);
-                    render_pass.draw(0..6, 0..mask);
-                }
-                if total > mask {
-                    render_pass.set_bind_group(0, &self.text_pipeline.color_bind_group, &[]);
-                    render_pass.draw(0..6, mask..total);
-                }
-            }
+            draw_text(&mut render_pass, 0, base_mask, base_color);
+            draw_panels(&mut render_pass, panel_split..panel_total);
+            draw_text(&mut render_pass, base_mask + base_color, overlay_mask, overlay_color);
 
             if self.cursor_frame.is_some() {
                 render_pass.set_pipeline(&self.cursor_pipeline.pipeline);

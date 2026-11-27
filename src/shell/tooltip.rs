@@ -108,6 +108,7 @@ impl SpatilState {
             &self.tooltip.text,
             &font,
             font_size,
+            crate::text::REGULAR,
             MAX_WIDTH - PAD_X * 2.0,
         );
         if fitted != self.tooltip.text {
@@ -170,23 +171,23 @@ impl SpatilState {
             .map(|(_, rect)| *rect)
     }
 
+    /// Rebuilds the overlay layer (tooltip, menus) and the clock digits; the card fills
+    /// the base layer itself in `tick_modules`.
     pub fn publish_hud_text(&mut self) {
-        self.wgpu_state.panels.clear();
-        self.wgpu_state.text_runs.clear();
         if let Some(run) = self.clock_digits() {
             self.wgpu_state.text_runs.push(run);
         }
+        let mut panels = std::mem::take(&mut self.wgpu_state.overlay_panels);
+        let mut runs = std::mem::take(&mut self.wgpu_state.overlay_runs);
+        panels.clear();
+        runs.clear();
         if let Some((panel, run)) = self.tooltip_draw() {
-            self.wgpu_state.panels.push(panel);
-            self.wgpu_state.text_runs.push(run);
+            panels.push(panel);
+            runs.push(run);
         }
-        let (mut panels, mut runs) = (
-            std::mem::take(&mut self.wgpu_state.panels),
-            std::mem::take(&mut self.wgpu_state.text_runs),
-        );
         self.menu_draw(&mut panels, &mut runs);
-        self.wgpu_state.panels = panels;
-        self.wgpu_state.text_runs = runs;
+        self.wgpu_state.overlay_panels = panels;
+        self.wgpu_state.overlay_runs = runs;
     }
 
     fn clock_digits(&self) -> Option<TextRun> {
@@ -200,7 +201,7 @@ impl SpatilState {
         // Scaled off the orb so the face stays legible at any familiar_size.
         let size = (frame.rect[2] * 0.26).clamp(8.0, 40.0);
         let font = &self.config.shell.font;
-        let width = crate::text::measure(&text, font, size);
+        let width = crate::text::measure(&text, font, size, crate::text::REGULAR);
         let mut color = self.wgpu_state.orb.accent_color;
         color[3] = 1.0 - frame.ambient * 0.45;
         Some(TextRun {
@@ -208,6 +209,7 @@ impl SpatilState {
             y: frame.rect[1] + (frame.rect[3] - crate::text::line_height(size)) * 0.5,
             text,
             size,
+            weight: crate::text::REGULAR,
             color,
         })
     }
@@ -225,6 +227,7 @@ impl SpatilState {
             x: rect[0] + PAD_X,
             y: rect[1] + PAD_Y,
             size: self.config.shell.font_size,
+            weight: crate::text::REGULAR,
             color,
         };
         Some((panel, run))
