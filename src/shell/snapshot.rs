@@ -106,6 +106,14 @@ pub fn run(out_dir: &Path) {
         shot(&mut state, "5-placeholder");
     }
 
+    state.dispatch_pointer_motion_absolute(centre.0, centre.1);
+    state.dispatch_pointer_button(BTN_LEFT, ButtonState::Pressed);
+    state.dispatch_pointer_button(BTN_LEFT, ButtonState::Released);
+    pump(&mut state, &mut event_loop, Duration::from_millis(600));
+    println!("orb click while open closes the card: {}", !state.orb_expanded());
+    state.dispatch_pointer_button(BTN_LEFT, ButtonState::Pressed);
+    state.dispatch_pointer_button(BTN_LEFT, ButtonState::Released);
+
     state.preview_orb_corner(Corner::TopLeft);
     pump(&mut state, &mut event_loop, Duration::from_millis(900));
     shot(&mut state, "6-top-left");

@@ -295,7 +295,8 @@ impl SpatilState {
     /// A press inside the open card: destinations answer, the rest is swallowed so the
     /// scene behind never sees a click that landed on the card.
     pub fn card_press(&mut self, point: Point<f64, Logical>) -> bool {
-        if !self.card_contains(point) {
+        // The orb sits inside the card and keeps its own click: toggle and drag.
+        if !self.card_contains(point) || self.orb_contains(point) {
             return false;
         }
         if let Some(CardTarget::Destination(dest)) = self.card_target_at(point) {
