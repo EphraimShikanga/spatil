@@ -54,6 +54,23 @@ fn place(anchor: [f32; 4], width: f32, height: f32, zone: Rectangle<i32, Logical
     ]
 }
 
+/// Places the tooltip beyond whichever edge of `card` is nearer `anchor`, centred on the
+/// anchor, so it never lands on the card's own text.
+pub fn outside(anchor: [f32; 4], card: [f32; 4], width: f32, height: f32, zone: Rectangle<i32, Logical>) -> [f32; 4] {
+    let (zx, zy) = (zone.loc.x as f32, zone.loc.y as f32);
+    let (zw, zh) = (zone.size.w as f32, zone.size.h as f32);
+    let anchor_y = anchor[1] + anchor[3] * 0.5;
+    let above = anchor_y - card[1] < card[1] + card[3] - anchor_y;
+    let y = if above { card[1] - GAP - height } else { card[1] + card[3] + GAP };
+    let x = anchor[0] + anchor[2] * 0.5 - width * 0.5;
+    [
+        x.clamp(zx, (zx + zw - width).max(zx)),
+        y.clamp(zy, (zy + zh - height).max(zy)),
+        width,
+        height,
+    ]
+}
+
 impl SpatilState {
     pub fn set_hovered_module(&mut self, module: Option<ModuleId>) {
         let current = self.tooltip.hovered.as_ref().map(|(id, _)| id);
@@ -115,7 +132,11 @@ impl SpatilState {
             self.tooltip.text = fitted;
         }
         let height = crate::text::line_height(font_size).ceil() + PAD_Y * 2.0;
-        self.tooltip.rect = place(anchor, width + PAD_X * 2.0, height, self.orb_zone());
+        let width = width + PAD_X * 2.0;
+        self.tooltip.rect = match self.card_rect() {
+            Some(card) => outside(anchor, card, width, height, self.orb_zone()),
+            None => place(anchor, width, height, self.orb_zone()),
+        };
     }
 
     pub fn text_report(&self) -> serde_json::Value {
@@ -182,6 +203,10 @@ impl SpatilState {
         panels.clear();
         runs.clear();
         if let Some((panel, run)) = self.tooltip_draw() {
+            panels.push(panel);
+            runs.push(run);
+        }
+        if let Some((panel, run)) = self.card_note_draw() {
             panels.push(panel);
             runs.push(run);
         }

@@ -15,6 +15,9 @@ const SHADOW_DROP: f32 = 5.0;
 const SURFACE: u32 = 0u;
 const HIGHLIGHT: u32 = 1u;
 const RULE: u32 = 2u;
+const FILL: u32 = 3u;
+const RING_WIDTH: f32 = 2.5;
+const TAU: f32 = 6.28318530718;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -24,6 +27,7 @@ struct VertexOutput {
     @location(3) alpha: f32,
     @location(4) @interpolate(flat) kind: u32,
     @location(5) fill: vec4<f32>,
+    @location(6) level: f32,
 };
 
 fn quad_corner(vertex_index: u32) -> vec2<f32> {
@@ -68,6 +72,7 @@ fn vs_main(
     out.alpha = params.y;
     out.kind = kind;
     out.fill = fill;
+    out.level = params.w;
     return out;
 }
 
@@ -117,8 +122,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         color = over(color, vec4<f32>(panel.notch.rgb, panel.notch.a * notch));
     } else if (in.kind == RULE) {
         color = vec4<f32>(1.0, 1.0, 1.0, 0.09 * inside);
-    } else {
+    } else if (in.kind == FILL) {
         color = vec4<f32>(in.fill.rgb, in.fill.a * inside);
+    } else {
+        let r = length(in.local);
+        let outer = min(in.half_size.x, in.half_size.y);
+        let band_sd = abs(r - (outer - RING_WIDTH * 0.5)) - RING_WIDTH * 0.5;
+        let band = 1.0 - smoothstep(-0.6, 0.6, band_sd);
+        // Screen y grows down, so clockwise-from-twelve is atan2(x, -y).
+        let turn = fract(atan2(in.local.x, -in.local.y) / TAU + 1.0);
+        let edge = 0.8 / max(TAU * r, 1.0);
+        let lit = 1.0 - smoothstep(in.level - edge, in.level + edge, turn);
+        let alpha = mix(0.18, 1.0, lit) * in.fill.a;
+        color = vec4<f32>(in.fill.rgb, alpha * band);
     }
 
     let a = color.a * in.alpha;

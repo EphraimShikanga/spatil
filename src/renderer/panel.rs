@@ -18,8 +18,10 @@ pub enum PanelKind {
     Highlight = 1,
     /// A hairline separator.
     Rule = 2,
-    /// A flat rounded shape in the instance's own colour: tiles, chips, bars, badges.
+    /// A flat rounded shape in the instance's own colour: tiles, chips, badges.
     Fill = 3,
+    /// A thin ring filled clockwise from twelve to `level`, over a faint track.
+    Ring = 4,
 }
 
 #[repr(C)]
@@ -47,6 +49,14 @@ impl PanelInstance {
             rect,
             params: [radius, alpha, kind as u8 as f32, 0.0],
             color: [0.0; 4],
+        }
+    }
+
+    pub fn ring(rect: [f32; 4], level: f32, color: [f32; 4]) -> Self {
+        Self {
+            rect,
+            params: [0.0, 1.0, PanelKind::Ring as u8 as f32, level],
+            color,
         }
     }
 

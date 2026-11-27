@@ -68,6 +68,30 @@ impl NetworkStatus {
         }
     }
 
+    pub fn title(&self) -> &'static str {
+        match self.kind {
+            LinkKind::Wired => "Ethernet",
+            LinkKind::Wireless => "Wi-Fi",
+            LinkKind::None if self.wireless_enabled => "Wi-Fi",
+            LinkKind::None => "Network",
+        }
+    }
+
+    pub fn detail(&self) -> String {
+        if !self.connected {
+            return if self.wireless_enabled || self.kind == LinkKind::Wireless {
+                "Not connected".to_string()
+            } else {
+                "Offline".to_string()
+            };
+        }
+        match (self.kind, self.strength) {
+            (LinkKind::Wireless, Some(strength)) => format!("{} · {strength}%", self.name),
+            (LinkKind::Wired, _) if self.name.is_empty() => "Connected".to_string(),
+            _ => self.name.clone(),
+        }
+    }
+
     pub fn summary(&self) -> String {
         if !self.connected {
             return "Offline".to_string();
@@ -278,6 +302,8 @@ async fn publish(
     module.urgent = !status.connected;
     module.label = status.summary();
     module.tooltip = status.summary();
+    module.title = status.title().to_string();
+    module.detail = status.detail();
     let _ = tx.send(module);
     *last = Some(status);
 }

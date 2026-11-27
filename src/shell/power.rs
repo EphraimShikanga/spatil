@@ -55,6 +55,20 @@ impl BatteryStatus {
         self.present && !self.charging && !self.full && self.percentage <= LOW
     }
 
+    pub fn detail(&self) -> String {
+        if !self.present {
+            return "No battery".to_string();
+        }
+        let percent = self.percentage.round() as i64;
+        if self.full {
+            format!("{percent}% · Full")
+        } else if self.charging {
+            format!("{percent}% · Charging")
+        } else {
+            format!("{percent}%")
+        }
+    }
+
     pub fn summary(&self) -> String {
         if !self.present {
             return "No battery".to_string();
@@ -174,6 +188,8 @@ async fn publish(
     module.urgent = status.urgent();
     module.label = status.summary();
     module.tooltip = status.summary();
+    module.title = "Battery".to_string();
+    module.detail = status.detail();
     let _ = tx.send(module);
     *last = Some(status);
 }

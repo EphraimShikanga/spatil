@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod bluetooth;
+pub mod card;
 pub mod launch;
 pub mod menu;
 pub mod module;

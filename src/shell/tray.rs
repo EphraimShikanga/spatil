@@ -10,85 +10,9 @@ use smithay::reexports::calloop::channel::{Event, channel as calloop_channel};
 use smithay::utils::{Logical, Point};
 
 use crate::input::drag::{BTN_MIDDLE, BTN_RIGHT};
-use crate::renderer::gauge::{GAUGE_PAD, GaugeInstance};
-use crate::renderer::hud::TrayQuad;
 use crate::shell::module::{self, ModuleAction, ModuleId, ModuleState};
 use crate::shell::tray::menu::MenuNode;
-use crate::renderer::orb::Corner;
 use crate::state::SpatilState;
-
-const ICON: f32 = 30.0;
-const GAP: f32 = 8.0;
-/// How much of a seat the application's own icon covers, leaving the rim for the level.
-const ICON_FRACTION: f32 = 0.56;
-/// Where a seat starts its journey out of the orb, in orb radii.
-const DEAL_FROM: f32 = 0.35;
-const RING_INSET: f32 = 20.0;
-const MAX_RING_GROWTH: f32 = 2.6;
-const STAGGER: f32 = 0.07;
-const QUARTER: f32 = std::f32::consts::FRAC_PI_2;
-
-fn arc_start(corner: Corner) -> f32 {
-    match corner {
-        Corner::TopLeft => 0.0,
-        Corner::TopRight => QUARTER,
-        Corner::BottomRight => std::f32::consts::PI,
-        Corner::BottomLeft => 3.0 * QUARTER,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct TrayArc {
-    radius: f32,
-    first: f32,
-    step: f32,
-    shown: usize,
-}
-
-impl TrayArc {
-    fn new(corner: Corner, orb_radius: f32, count: usize) -> Option<Self> {
-        if count == 0 {
-            return None;
-        }
-        let base = orb_radius + ICON * 0.5 + RING_INSET;
-        let pitch = ICON + GAP;
-        let needed = count as f32 * pitch / QUARTER;
-        let radius = base.max(needed).min(base * MAX_RING_GROWTH);
-
-        let step = pitch / radius;
-        let fits = (((QUARTER / step).floor() as usize) + 1).max(1);
-        let shown = count.min(fits);
-        if shown < count {
-            tracing::warn!("tray arc holds {shown} of {count} items; the rest are not shown");
-        }
-
-        let span = (shown as f32 - 1.0) * step;
-        let mid = arc_start(corner) + QUARTER * 0.5;
-        Some(Self { radius, first: mid - span * 0.5, step, shown })
-    }
-
-    fn angle(&self, i: usize) -> f32 {
-        self.first + i as f32 * self.step
-    }
-
-    /// Seat `i`'s centre when `t` of the way out: it leaves the orb at the arc's
-    /// middle and fans along the orbit to its place, so the arc is dealt, not popped.
-    fn seat(&self, orb_centre: (f32, f32), orb_radius: f32, i: usize, t: f32) -> (f32, f32) {
-        let mid = self.first + (self.shown as f32 - 1.0) * self.step * 0.5;
-        let angle = mid + (self.angle(i) - mid) * t;
-        let reach = orb_radius * DEAL_FROM + (self.radius - orb_radius * DEAL_FROM) * t;
-        (
-            orb_centre.0 + angle.cos() * reach,
-            orb_centre.1 + angle.sin() * reach,
-        )
-    }
-
-}
-
-fn stagger(open: f32, index: usize) -> f32 {
-    let lo = (index as f32 * STAGGER).min(0.6);
-    ((open - lo) / (1.0 - lo).max(0.001)).clamp(0.0, 1.0)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayRole {
@@ -379,21 +303,8 @@ impl SpatilState {
             let live: Vec<String> = modules.iter().map(|m| m.id.key()).collect();
             self.wgpu_state
                 .tray_icons
-                .retain(|key, _| live.iter().any(|k| k == key));
+                .retain(|key, _| key.starts_with("dest:") || live.iter().any(|k| k == key));
         }
-
-        if open <= 0.002 {
-            self.wgpu_state.tray_layout.clear();
-            self.wgpu_state.gauges.clear();
-            self.module_slots.clear();
-            return;
-        }
-        let Some(rect) = self.orb_rect() else {
-            self.wgpu_state.tray_layout.clear();
-            self.wgpu_state.gauges.clear();
-            self.module_slots.clear();
-            return;
-        };
 
         for module in modules.iter().filter(|m| m.drawable()) {
             let key = module.id.key();
@@ -405,63 +316,16 @@ impl SpatilState {
             self.wgpu_state.upload_tray_icon(key, w, h, &bgra);
         }
 
-        let drawable: Vec<(ModuleId, Option<f32>, bool)> = modules
-            .into_iter()
-            .filter(|m| m.drawable())
-            .map(|m| (m.id, m.level, m.urgent))
-            .collect();
-
-        let radius = rect.size.w as f32 * 0.5;
-        let centre = (rect.loc.x as f32 + radius, rect.loc.y as f32 + radius);
-        self.module_slots.clear();
-        let Some(arc) = TrayArc::new(self.orb_corner(), radius, drawable.len()) else {
-            self.wgpu_state.tray_layout.clear();
-            self.wgpu_state.gauges.clear();
-            return;
-        };
-
-        let mut gauges = Vec::new();
-        self.wgpu_state.tray_layout = drawable
-            .into_iter()
-            .take(arc.shown)
-            .enumerate()
-            .filter_map(|(i, (id, level, urgent))| {
-                let reveal = stagger(open, i);
-                if reveal <= 0.002 {
-                    return None;
-                }
-                let at = arc.seat(centre, radius, i, reveal);
-                let square = |size: f32| [at.0 - size * 0.5, at.1 - size * 0.5, size, size];
-
-                let seat = ICON * (0.55 + 0.45 * reveal);
-                self.module_slots.push((id.clone(), square(seat)));
-                gauges.push(GaugeInstance {
-                    rect: square(seat * GAUGE_PAD),
-                    params: [
-                        level.unwrap_or(0.0),
-                        reveal,
-                        urgent as u8 as f32,
-                        level.is_some() as u8 as f32,
-                    ],
-                });
-                Some(TrayQuad {
-                    key: id.key(),
-                    rect: square(seat * ICON_FRACTION),
-                    alpha: reveal,
-                })
-            })
-            .collect();
-        self.wgpu_state.gauges = gauges;
+        let warn = modules.iter().any(|m| m.urgent && !matches!(m.id, ModuleId::Tray(_)));
+        self.draw_card(&modules, open, warn);
     }
 
     pub fn module_at(&self, point: Point<f64, Logical>) -> Option<ModuleId> {
-        self.module_slots.iter().find_map(|(id, rect)| {
-            let half = rect[2] as f64 * 0.5;
-            let cx = rect[0] as f64 + half;
-            let cy = rect[1] as f64 + half;
-            let (dx, dy) = (point.x - cx, point.y - cy);
-            (dx * dx + dy * dy <= half * half).then(|| id.clone())
-        })
+        let (x, y) = (point.x as f32, point.y as f32);
+        self.module_slots
+            .iter()
+            .find(|(_, r)| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3])
+            .map(|(id, _)| id.clone())
     }
 
     fn tray_address(&self, key: &str) -> Option<(String, String)> {
@@ -882,80 +746,6 @@ mod tests {
         tray.apply(TrayEvent::Unavailable);
         assert_eq!(tray.role, TrayRole::Unavailable);
         assert!(tray.items().is_empty());
-    }
-
-    fn tray_slots(corner: Corner, centre: (f32, f32), orb_radius: f32, n: usize) -> Vec<(f32, f32)> {
-        TrayArc::new(corner, orb_radius, n).map_or_else(Vec::new, |arc| {
-            (0..arc.shown).map(|i| arc.seat(centre, orb_radius, i, 1.0)).collect()
-        })
-    }
-
-    #[test]
-    fn an_empty_tray_has_no_slots() {
-        assert!(tray_slots(Corner::BottomRight, (100.0, 100.0), 28.0, 0).is_empty());
-    }
-
-    #[test]
-    fn seats_deal_out_of_the_orb_and_land_on_the_arc() {
-        let centre = (1000.0, 800.0);
-        let arc = TrayArc::new(Corner::BottomRight, 28.0, 3).expect("arc");
-        let dist = |p: (f32, f32)| (p.0 - centre.0).hypot(p.1 - centre.1);
-        assert!(dist(arc.seat(centre, 28.0, 0, 0.0)) < 28.0, "starts inside the orb");
-        assert!((dist(arc.seat(centre, 28.0, 0, 1.0)) - arc.radius).abs() < 0.01);
-        assert_eq!(arc.seat(centre, 28.0, 0, 0.0), arc.seat(centre, 28.0, 2, 0.0));
-    }
-
-    #[test]
-    fn the_arc_opens_into_the_screen_from_each_corner() {
-        let centre = (1000.0, 800.0);
-        let one = |corner| tray_slots(corner, centre, 28.0, 1)[0];
-
-        let br = one(Corner::BottomRight);
-        assert!(br.0 < centre.0 && br.1 < centre.1, "bottom-right fans up-left: {br:?}");
-        let bl = one(Corner::BottomLeft);
-        assert!(bl.0 > centre.0 && bl.1 < centre.1, "bottom-left fans up-right: {bl:?}");
-        let tl = one(Corner::TopLeft);
-        assert!(tl.0 > centre.0 && tl.1 > centre.1, "top-left fans down-right: {tl:?}");
-        let tr = one(Corner::TopRight);
-        assert!(tr.0 < centre.0 && tr.1 > centre.1, "top-right fans down-left: {tr:?}");
-    }
-
-    #[test]
-    fn items_sit_on_a_circle_and_do_not_overlap() {
-        let centre = (1000.0, 800.0);
-        let slots = tray_slots(Corner::BottomRight, centre, 28.0, 5);
-        assert_eq!(slots.len(), 5);
-
-        let radius = |s: &(f32, f32)| (s.0 - centre.0).hypot(s.1 - centre.1);
-        let first = radius(&slots[0]);
-        for slot in &slots {
-            assert!((radius(slot) - first).abs() < 0.01, "all slots share one radius");
-        }
-        for pair in slots.windows(2) {
-            let gap = (pair[0].0 - pair[1].0).hypot(pair[0].1 - pair[1].1);
-            assert!(gap >= ICON, "neighbours must not overlap, gap was {gap}");
-        }
-    }
-
-    #[test]
-    fn a_crowded_tray_grows_its_ring_rather_than_bunching_up() {
-        let centre = (1000.0, 800.0);
-        let radius = |n| {
-            let s = tray_slots(Corner::BottomRight, centre, 28.0, n)[0];
-            (s.0 - centre.0).hypot(s.1 - centre.1)
-        };
-        assert!(radius(12) > radius(2), "more items push the arc outward");
-    }
-
-    #[test]
-    fn the_reveal_staggers_but_always_finishes() {
-        assert_eq!(stagger(0.0, 0), 0.0);
-        assert_eq!(stagger(1.0, 0), 1.0);
-        assert_eq!(stagger(1.0, 7), 1.0, "every icon is fully out when open");
-        assert!(
-            stagger(0.5, 0) > stagger(0.5, 4),
-            "earlier icons lead the later ones",
-        );
     }
 
     #[test]

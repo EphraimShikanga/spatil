@@ -239,7 +239,6 @@ impl SpatilState {
             alert: 0.0,
             warn: 0.0,
             facing: self.orb_corner().facing(),
-            cursor: [flight.cursor_pos.0, flight.cursor_pos.1],
         });
 
         self.cursor_hidden = flight.hide_real_cursor;
@@ -362,6 +361,10 @@ impl SpatilState {
         let cy = rect.loc.y as f64 + radius;
         let (dx, dy) = (point.x - cx, point.y - cy);
         dx * dx + dy * dy <= radius * radius
+    }
+
+    pub fn orb_expanded(&self) -> bool {
+        self.orb.expanded
     }
 
     pub fn close_orb(&mut self) {

@@ -14,6 +14,7 @@ use cgmath::Vector3;
 use crate::config::{Action, KeyCombo, SessionState, SpatilConfig};
 use crate::input::drag::{Drag, Navigate};
 use crate::renderer::WgpuState;
+use crate::shell::card::CardRuntime;
 use crate::shell::orb::OrbRuntime;
 use crate::shell::menu::MenuRuntime;
 use crate::shell::tooltip::TooltipRuntime;
@@ -135,6 +136,7 @@ pub struct SpatilState {
     pub pointer_moved: bool,
     pub last_input: Instant,
     pub orb: OrbRuntime,
+    pub card: CardRuntime,
     pub tray: Tray,
     pub module_slots: Vec<(ModuleId, [f32; 4])>,
     pub tooltip: TooltipRuntime,
@@ -305,6 +307,7 @@ impl SpatilState {
             pointer_moved: false,
             last_input: Instant::now(),
             orb: OrbRuntime::default(),
+            card: CardRuntime::default(),
             tray: Tray::default(),
             module_slots: Vec::new(),
             tooltip: TooltipRuntime::default(),

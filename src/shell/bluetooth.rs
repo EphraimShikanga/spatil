@@ -38,6 +38,20 @@ impl BluetoothStatus {
         }
     }
 
+    pub fn detail(&self) -> String {
+        if !self.available {
+            return "Unavailable".to_string();
+        }
+        if !self.powered {
+            return "Off".to_string();
+        }
+        match self.connected.len() {
+            0 => "On".to_string(),
+            1 => self.connected[0].clone(),
+            n => format!("{n} devices"),
+        }
+    }
+
     pub fn summary(&self) -> String {
         if !self.available {
             return "No bluetooth adapter".to_string();
@@ -163,6 +177,8 @@ async fn publish(
     module.active = status.powered;
     module.label = status.summary();
     module.tooltip = status.summary();
+    module.title = "Bluetooth".to_string();
+    module.detail = status.detail();
     let _ = tx.send(module);
     *last = Some(status);
 }

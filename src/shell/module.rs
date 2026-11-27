@@ -51,6 +51,9 @@ pub struct ModuleState {
     pub urgent: bool,
     pub label: String,
     pub tooltip: String,
+    /// The control-centre tile's heading and one-line state, e.g. "Wi-Fi" / "AUDREY · 52%".
+    pub title: String,
+    pub detail: String,
 }
 
 impl ModuleState {
@@ -63,6 +66,8 @@ impl ModuleState {
             urgent: false,
             label: String::new(),
             tooltip: String::new(),
+            title: String::new(),
+            detail: String::new(),
         }
     }
 

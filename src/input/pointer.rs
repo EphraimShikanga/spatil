@@ -6,6 +6,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 
 use crate::input::drag::{BTN_LEFT, BTN_MIDDLE, BTN_RIGHT};
 use crate::input::raycast::{raycast_entity, raycast_surface};
+use crate::shell::module::ModuleId;
 use crate::state::SpatilState;
 
 impl SpatilState {
@@ -21,10 +22,13 @@ impl SpatilState {
             self.menu_hover(self.pointer_location);
         }
         let hovered_module = self.module_at(self.pointer_location);
-        let on_orb =
-            self.orb_contains(self.pointer_location) || self.orb_dragging() || hovered_module.is_some();
+        let on_orb = self.orb_contains(self.pointer_location)
+            || self.card_contains(self.pointer_location)
+            || self.orb_dragging();
         self.set_orb_hover(on_orb);
-        self.set_hovered_module(hovered_module);
+        self.card_hover(self.pointer_location);
+        // Tiles already say what they are; only tray icons need a tooltip.
+        self.set_hovered_module(hovered_module.filter(|id| matches!(id, ModuleId::Tray(_))));
         // NDC cursor for the Aether parallax camera (y up), in output pixel space.
         let (w, h) = (
             self.wgpu_state.width.max(1) as f64,
@@ -100,7 +104,10 @@ impl SpatilState {
         {
             return;
         }
-        if button_state == ButtonState::Released && self.module_at(self.pointer_location).is_some() {
+        if button_state == ButtonState::Pressed && self.card_press(self.pointer_location) {
+            return;
+        }
+        if button_state == ButtonState::Released && self.card_contains(self.pointer_location) {
             return;
         }
         if button_state == ButtonState::Pressed

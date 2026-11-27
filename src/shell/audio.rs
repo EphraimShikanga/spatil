@@ -32,6 +32,13 @@ impl AudioStatus {
         Some(self.volume.clamp(0.0, 1.0))
     }
 
+    pub fn detail(&self) -> String {
+        if self.muted {
+            return "Muted".to_string();
+        }
+        format!("{}%", (self.volume * 100.0).round() as i64)
+    }
+
     pub fn summary(&self) -> String {
         if self.muted {
             return "Volume muted".to_string();
@@ -126,6 +133,8 @@ fn publish(tx: &Sender<ModuleState>, last: &mut Option<AudioStatus>) {
     module.active = !status.muted;
     module.label = status.summary();
     module.tooltip = status.summary();
+    module.title = "Sound".to_string();
+    module.detail = status.detail();
     let _ = tx.send(module);
     *last = Some(status);
 }

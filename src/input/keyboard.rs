@@ -15,6 +15,7 @@ const TILT_STEP_DEGREES: f32 = 5.0;
 enum Handled {
     Act(Action),
     Menu(Keysym),
+    CloseCard,
 }
 
 fn vt_switch_target(sym: Keysym) -> Option<i32> {
@@ -61,6 +62,9 @@ impl SpatilState {
             if data.menu_is_open() {
                 return FilterResult::Intercept(Handled::Menu(sym));
             }
+            if data.orb_expanded() && sym.raw() == keysyms::KEY_Escape {
+                return FilterResult::Intercept(Handled::CloseCard);
+            }
             if let Some(vt) = vt_switch_target(sym) {
                 return FilterResult::Intercept(Handled::Act(Action::ChangeVt(vt)));
             }
@@ -74,6 +78,7 @@ impl SpatilState {
         match handled {
             Some(Handled::Act(action)) => self.run_action(action),
             Some(Handled::Menu(sym)) => self.menu_key(sym),
+            Some(Handled::CloseCard) => self.close_orb(),
             None => {}
         }
     }

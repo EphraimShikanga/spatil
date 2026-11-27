@@ -132,7 +132,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let half = max(orb.rect.z, 1.0) * 0.5;
     let centre = orb.rect.xy + vec2<f32>(half);
-    let radius_px = half * (1.0 + orb.hover * 0.04);
+    let radius_px = half * (1.0 + orb.hover * 0.04 * (1.0 - orb.open));
 
     let card_half = orb.card.zw * 0.5;
     let card_sd = rounded_box(in.pixel - (orb.card.xy + card_half), card_half, orb.shape.x);
@@ -176,7 +176,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let face = fill(d - 1.0, aa);
     if (face > 0.0) {
         // Multiplicative: blending is linear, so an additive lift reads far brighter than it looks.
-        let lift = 1.0 + orb.hover * 0.35 * (1.0 - ambient);
+        let lift = 1.0 + orb.hover * 0.35 * (1.0 - ambient) * (1.0 - orb.open);
         let shade = mix(1.1, 0.88, smoothstep(0.0, 1.0, d));
         var f = vec4<f32>(body * shade * lift * mix(1.0, 0.5, ambient), face * orb.body_color.a);
 

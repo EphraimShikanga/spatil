@@ -91,18 +91,27 @@ pub fn run(out_dir: &Path) {
 
     if let Some((_, r)) = state.module_slots.first().cloned() {
         state.dispatch_pointer_motion_absolute((r[0] + r[2] * 0.5) as f64, (r[1] + r[3] * 0.5) as f64);
-        pump(&mut state, &mut event_loop, Duration::from_millis(900));
-        shot(&mut state, "4-tooltip");
-        println!("tooltip: {}", state.text_report());
-    } else {
-        eprintln!("hud-snapshot: no modules on the arc");
+        pump(&mut state, &mut event_loop, Duration::from_millis(300));
+        shot(&mut state, "4-tile-hover");
+    }
+    if let Some(r) = state.card_destination_rect(crate::shell::card::Destination::Calendar) {
+        state.dispatch_pointer_motion_absolute((r[0] + r[2] * 0.5) as f64, (r[1] + r[3] * 0.5) as f64);
+        state.dispatch_pointer_button(BTN_LEFT, ButtonState::Pressed);
+        state.dispatch_pointer_button(BTN_LEFT, ButtonState::Released);
+        pump(&mut state, &mut event_loop, Duration::from_millis(400));
+        shot(&mut state, "5-placeholder");
     }
 
-    // Off the arc first: a click on a module would launch its control application.
-    state.dispatch_pointer_motion_absolute(300.0, 250.0);
+    state.preview_orb_corner(Corner::TopLeft);
+    pump(&mut state, &mut event_loop, Duration::from_millis(900));
+    shot(&mut state, "6-top-left");
+    state.preview_orb_corner(Corner::BottomRight);
+
+    // Off the card first: a click on a tile would launch its control application.
+    state.dispatch_pointer_motion_absolute(450.0, 120.0);
     state.dispatch_pointer_button(BTN_LEFT, ButtonState::Pressed);
     state.dispatch_pointer_button(BTN_LEFT, ButtonState::Released);
     state.last_input = Instant::now() - Duration::from_secs(3600);
     pump(&mut state, &mut event_loop, Duration::from_millis(1500));
-    shot(&mut state, "5-idle");
+    shot(&mut state, "7-idle");
 }

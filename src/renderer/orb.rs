@@ -95,8 +95,6 @@ pub struct OrbFrame {
     pub warn: f32,
     /// Dial angle pointing from the orb toward the screen, where the alert pip sits.
     pub facing: f32,
-    /// The cursor in screen pixels, real or in flight.
-    pub cursor: [f32; 2],
 }
 
 #[repr(C)]
