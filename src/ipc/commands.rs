@@ -70,7 +70,7 @@ impl SpatilState {
             "agent_phase" => {
                 let name = cmd.text.as_deref().unwrap_or("");
                 match crate::shell::agent::AgentPhase::parse(name, &cmd.args) {
-                    Some(phase) => self.agent.set_phase(phase),
+                    Some(phase) => self.agent.script_phase(phase),
                     None => tracing::warn!("agent_phase needs text: idle|listening|thinking|waiting|working|answering|done; got {cmd:?}"),
                 }
             }

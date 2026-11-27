@@ -38,11 +38,6 @@ fn pump_with(
     }
 }
 
-/// A stand-in voice: syllable-rate swells, never silent, never pinned at full.
-fn speech(t: f32) -> f32 {
-    (0.45 + 0.3 * (t * 9.0).sin() + 0.2 * (t * 23.0 + 1.0).sin()).clamp(0.0, 1.0)
-}
-
 /// Pumps as if the user were present, so ambient never creeps into a state capture.
 fn awake(
     state: &mut SpatilState,
@@ -75,19 +70,18 @@ fn agent_states(
     state.agent.set_answer("Done. Research is behind you, Code is in front.");
     state.agent.set_transcript(&said[..62]);
 
-    state.agent.set_phase(AgentPhase::Listening);
-    awake(state, event_loop, Duration::from_millis(90), |s, t| s.agent.set_levels(speech(t), 0.0));
+    state.agent.script_phase(AgentPhase::Listening);
+    awake(state, event_loop, Duration::from_millis(90), |_, _| {});
     shot(state, "10-listening-opening");
-    awake(state, event_loop, calm, |s, t| s.agent.set_levels(speech(t), 0.0));
+    awake(state, event_loop, calm, |_, _| {});
     shot(state, "10-listening");
 
-    state.agent.set_levels(0.0, 0.0);
     state.agent.set_transcript(said);
-    state.agent.set_phase(AgentPhase::Thinking);
+    state.agent.script_phase(AgentPhase::Thinking);
     awake(state, event_loop, Duration::from_millis(1250), |_, _| {});
     shot(state, "11-thinking");
 
-    state.agent.set_phase(AgentPhase::WaitingForYou);
+    state.agent.script_phase(AgentPhase::WaitingForYou);
     awake(state, event_loop, calm, |_, _| {});
     shot(state, "12-waiting");
     state.preview_orb_corner(Corner::TopLeft);
@@ -96,16 +90,15 @@ fn agent_states(
     state.preview_orb_corner(Corner::BottomRight);
     awake(state, event_loop, calm, |_, _| {});
 
-    state.agent.set_phase(AgentPhase::Working { step: 1, total: 3 });
+    state.agent.script_phase(AgentPhase::Working { step: 1, total: 3 });
     awake(state, event_loop, calm, |_, _| {});
     shot(state, "13-working");
 
-    state.agent.set_phase(AgentPhase::Answering);
-    awake(state, event_loop, calm, |s, t| s.agent.set_levels(0.0, speech(t)));
+    state.agent.script_phase(AgentPhase::Answering);
+    awake(state, event_loop, calm, |_, _| {});
     shot(state, "14-answering");
 
-    state.agent.set_levels(0.0, 0.0);
-    state.agent.set_phase(AgentPhase::Done);
+    state.agent.script_phase(AgentPhase::Done);
     awake(state, event_loop, Duration::from_millis(250), |_, _| {});
     shot(state, "15-done-sweeping");
     awake(state, event_loop, Duration::from_millis(1400), |_, _| {});
@@ -234,7 +227,70 @@ pub fn run(out_dir: &Path) {
     state.last_input = Instant::now();
     agent_states(&mut state, &mut event_loop, &shot);
     gestures(&mut state, &mut event_loop, centre);
+    stand_in(&mut state, &mut event_loop, centre, &shot);
     crown(&mut state, &mut event_loop, &shot);
+}
+
+fn awake_until(
+    state: &mut SpatilState,
+    event_loop: &mut EventLoop<'static, SpatilState>,
+    limit: Duration,
+    done: impl Fn(&SpatilState) -> bool,
+) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < limit {
+        if done(state) {
+            return true;
+        }
+        awake(state, event_loop, Duration::from_millis(50), |_, _| {});
+    }
+    done(state)
+}
+
+/// Holds the orb with no agent and no IPC: the stand-in plays VoiceProto's whole conversation.
+fn stand_in(
+    state: &mut SpatilState,
+    event_loop: &mut EventLoop<'static, SpatilState>,
+    centre: (f64, f64),
+    shot: &dyn Fn(&mut SpatilState, &str),
+) {
+    use crate::shell::agent::AgentPhase;
+    use crate::shell::banner::BannerButton;
+    state.agent.script_phase(AgentPhase::Idle);
+    state.agent.set_transcript("");
+    state.agent.set_plan(&[]);
+    state.agent.set_answer("");
+    state.dispatch_pointer_motion_absolute(centre.0, centre.1);
+    state.dispatch_pointer_button(BTN_LEFT, ButtonState::Pressed);
+    awake(state, event_loop, Duration::from_millis(1800), |_, _| {});
+    shot(state, "30-hold-listening");
+    state.dispatch_pointer_button(BTN_LEFT, ButtonState::Released);
+    awake(state, event_loop, Duration::from_millis(700), |_, _| {});
+    shot(state, "31-released-thinking");
+    let plan = awake_until(state, event_loop, Duration::from_secs(6), |s| s.agent.phase() == AgentPhase::WaitingForYou);
+    println!("the stand-in brings a plan: {plan}");
+    awake(state, event_loop, Duration::from_millis(700), |_, _| {});
+    shot(state, "32-plan");
+    if let Some(r) = state.banner_button(BannerButton::DoIt) {
+        state.dispatch_pointer_motion_absolute((r[0] + r[2] * 0.5) as f64, (r[1] + r[3] * 0.5) as f64);
+        state.dispatch_pointer_button(BTN_LEFT, ButtonState::Pressed);
+        state.dispatch_pointer_button(BTN_LEFT, ButtonState::Released);
+    }
+    state.dispatch_pointer_motion_absolute(450.0, 120.0);
+    awake_until(state, event_loop, Duration::from_secs(6), |s| {
+        matches!(s.agent.phase(), AgentPhase::Working { step: 1, .. })
+    });
+    awake(state, event_loop, Duration::from_millis(600), |_, _| {});
+    shot(state, "33-working");
+    let answer = awake_until(state, event_loop, Duration::from_secs(10), |s| s.agent.phase() == AgentPhase::Answering);
+    println!("then the answer: {answer}");
+    awake(state, event_loop, Duration::from_millis(900), |_, _| {});
+    shot(state, "34-answering");
+    awake_until(state, event_loop, Duration::from_secs(12), |s| s.agent.phase() == AgentPhase::Done);
+    awake(state, event_loop, Duration::from_millis(250), |_, _| {});
+    shot(state, "35-sweeping-home");
+    let home = awake_until(state, event_loop, Duration::from_secs(5), |s| s.agent.phase() == AgentPhase::Idle);
+    println!("and home to the time: {home}");
 }
 
 fn crown(
@@ -244,7 +300,7 @@ fn crown(
 ) {
     use crate::shell::agent::AgentPhase;
     use crate::shell::mpris::{NowPlaying, Playback, Track};
-    state.agent.set_phase(AgentPhase::Idle);
+    state.agent.script_phase(AgentPhase::Idle);
     state.dispatch_pointer_motion_absolute(450.0, 120.0);
     println!("now playing on the session bus: {}", state.crown_report()["now_playing"]);
     // Crown.dc.html's sample track; its art is the mockup's placeholder colour.

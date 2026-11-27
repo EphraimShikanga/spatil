@@ -8,10 +8,9 @@ use crate::config::parse_hex_color;
 use crate::renderer::orb::Corner;
 use crate::renderer::panel::PanelInstance;
 use crate::renderer::text::TextRun;
-use crate::scene::animation::spring_step;
 use crate::shell::agent::{AgentEvent, AgentPhase};
 use crate::shell::card::{inside, with_alpha};
-use crate::shell::orb::Eased;
+use crate::shell::motion::{EASE, EASE_OUT, Tween, cubic_bezier};
 use crate::state::SpatilState;
 use crate::text::REGULAR;
 
@@ -79,17 +78,37 @@ struct PlanText {
     height: f32,
 }
 
-#[derive(Default)]
+/// The prototype's resting banner: an invisible orb-sized disc at the card's inset.
+const HIDDEN: [f32; 3] = [56.0, 56.0, 28.0];
+/// `transition: width .42s cubic-bezier(.2,.9,.25,1), height .42s …, border-radius .42s …, opacity .2s`
+const MORPH_MS: f32 = 420.0;
+const MORPH_CURVE: [f32; 4] = [0.2, 0.9, 0.25, 1.0];
+const FADE_MS: f32 = 200.0;
+
 pub struct BannerRuntime {
-    open: Eased,
-    size: [f32; 3],
-    velocity: [f32; 3],
+    opacity: Tween,
+    size: [Tween; 3],
     target: [f32; 3],
     shown: Option<Kind>,
     content_ms: f32,
     rect: Option<[f32; 4]>,
     buttons: Vec<(BannerButton, [f32; 4])>,
     plan: Option<(u64, PlanText)>,
+}
+
+impl Default for BannerRuntime {
+    fn default() -> Self {
+        Self {
+            opacity: Tween::new(0.0, FADE_MS, EASE),
+            size: HIDDEN.map(|v| Tween::new(v, MORPH_MS, MORPH_CURVE)),
+            target: HIDDEN,
+            shown: None,
+            content_ms: 0.0,
+            rect: None,
+            buttons: Vec::new(),
+            plan: None,
+        }
+    }
 }
 
 struct Ink {
@@ -138,20 +157,6 @@ fn line_y(top: f32, line: f32, size: f32) -> f32 {
     top + (line - NORMAL * size) * 0.5
 }
 
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
-}
-
-fn ease(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-fn ease_out(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    1.0 - (1.0 - t) * (1.0 - t)
-}
-
 fn plan_text(font: &str, said: &str, steps: &[String]) -> PlanText {
     let inner = PLAN_W - PLAN_PAD * 2.0;
     let said = crate::text::wrap(said, font, 12.5, REGULAR, inner, usize::MAX);
@@ -197,26 +202,15 @@ impl SpatilState {
             Some(Kind::Plan) => [PLAN_W, self.banner_plan().height, PLAN_R],
             Some(Kind::Answering) => [ANSWER_W, PILL[1], PILL[2]],
             Some(_) => PILL,
-            None => self.banner.target,
+            None => HIDDEN,
         };
-        let (stiffness, damping) = (
-            self.config.animation.spring_stiffness,
-            self.config.animation.spring_damping,
-        );
-        let dt = dt_ms / 1000.0;
         let banner = &mut self.banner;
         banner.target = target;
-        banner.open.tick(kind.is_some() as u8 as f32, stiffness, damping, dt);
-        // Fresh out of the orb, the banner grows straight to its shape rather than via the last one.
-        if kind.is_some() && banner.open.value < 0.02 {
-            banner.size = target;
-            banner.velocity = [0.0; 3];
-        } else if kind.is_some() {
-            for i in 0..3 {
-                let (v, vel) = spring_step(banner.size[i], banner.velocity[i], target[i], stiffness, damping, dt);
-                banner.size[i] = v;
-                banner.velocity[i] = vel;
-            }
+        banner.opacity.set(kind.is_some() as u8 as f32);
+        banner.opacity.tick(dt_ms);
+        for (tween, value) in banner.size.iter_mut().zip(target) {
+            tween.set(value);
+            tween.tick(dt_ms);
         }
         if banner.shown != kind {
             banner.shown = kind;
@@ -253,7 +247,8 @@ impl SpatilState {
     pub fn banner_report(&self) -> serde_json::Value {
         serde_json::json!({
             "rect": self.banner.rect,
-            "open": self.banner.open.value,
+            "opacity": self.banner.opacity.value(),
+            "size": self.banner.size.map(|t| t.value()),
             "buttons": self.banner.buttons.iter().map(|(b, r)| (format!("{b:?}"), *r)).collect::<Vec<_>>(),
         })
     }
@@ -265,33 +260,34 @@ impl SpatilState {
         if self.card_rect().is_some() {
             return;
         }
-        let t = ease(self.banner.open.value);
+        let opacity = self.banner.opacity.value();
         let Some(orb) = self.orb_rect() else {
             return;
         };
-        if t <= 0.002 {
+        if opacity <= 0.002 {
             return;
         }
         let orb = [orb.loc.x as f32, orb.loc.y as f32, orb.size.w as f32, orb.size.h as f32];
         let corner = self.orb_corner();
-        let [w, h, r] = self.banner.size;
-        let shaped = anchor(corner, orb, w, h);
-        let morph: [f32; 4] = std::array::from_fn(|i| lerp(orb[i], shaped[i], t));
+        let [w, h, r] = self.banner.size.map(|t| t.value());
+        let shape = anchor(corner, orb, w, h);
         if let Some(frame) = self.wgpu_state.orb_frame.as_mut() {
-            frame.card = morph;
-            frame.card_radius = lerp(orb[2] * 0.5, r, t);
-            frame.blend = 96.0 * t * (1.0 - t);
-            frame.open = frame.open.max(t);
+            frame.card = shape;
+            frame.card_radius = r;
+            frame.blend = 96.0 * opacity * (1.0 - opacity);
+            frame.surface_alpha = opacity;
+            // `box-shadow: 0 22px 54px rgba(0,0,0,0.6)`
+            frame.shadow = [0.6 * opacity, 22.0, 54.0];
         }
-        self.banner.rect = Some(morph);
+        self.banner.rect = Some(shape);
 
         let Some(kind) = self.banner.shown else {
             return;
         };
         let [tw, th, _] = self.banner.target;
         let covered = (1.0 - ((w - tw).abs() + (h - th).abs()) / 24.0).clamp(0.0, 1.0);
-        let appear = ease_out((self.banner.content_ms - APPEAR_DELAY_MS) / APPEAR_MS);
-        let alpha = appear * ease((t - 0.88) / 0.12) * covered;
+        let appear = cubic_bezier(EASE_OUT, (self.banner.content_ms - APPEAR_DELAY_MS) / APPEAR_MS);
+        let alpha = appear * opacity * covered;
         if alpha <= 0.01 {
             return;
         }

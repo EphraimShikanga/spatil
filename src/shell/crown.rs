@@ -7,7 +7,7 @@ use smithay::utils::{Logical, Point};
 use crate::config::parse_hex_color;
 use crate::renderer::orb::Corner;
 use crate::renderer::text::TextRun;
-use crate::scene::animation::spring_step;
+use crate::shell::motion::{EASE, Tween};
 use crate::shell::card::{inside, with_alpha};
 use crate::shell::mpris::{MprisRequest, NowPlaying, Playback};
 use crate::shell::orb::Eased;
@@ -117,18 +117,37 @@ impl CrownGeometry {
     }
 }
 
-#[derive(Default)]
+/// `.strip{transition:width .38s cubic-bezier(.2,.9,.25,1),opacity .18s}`
+const STRIP_MS: f32 = 380.0;
+const STRIP_CURVE: [f32; 4] = [0.2, 0.9, 0.25, 1.0];
+const STRIP_FADE_MS: f32 = 180.0;
+
 pub struct CrownRuntime {
     now: Option<NowPlaying>,
     requests: Option<Sender<MprisRequest>>,
     shown: Eased,
     hovered: bool,
-    strip: f32,
-    strip_velocity: f32,
-    strip_alpha: Eased,
+    strip: Tween,
+    strip_alpha: Tween,
     art_url: Option<String>,
     has_art: bool,
     geometry: Option<CrownGeometry>,
+}
+
+impl Default for CrownRuntime {
+    fn default() -> Self {
+        Self {
+            now: None,
+            requests: None,
+            shown: Eased::default(),
+            hovered: false,
+            strip: Tween::new(0.0, STRIP_MS, STRIP_CURVE),
+            strip_alpha: Tween::new(0.0, STRIP_FADE_MS, EASE),
+            art_url: None,
+            has_art: false,
+            geometry: None,
+        }
+    }
 }
 
 impl SpatilState {
@@ -160,7 +179,7 @@ impl SpatilState {
 
     fn crown_strip_rect(&self) -> Option<[f32; 4]> {
         let geometry = self.crown.geometry?;
-        (self.crown.strip > 0.05).then(|| geometry.strip_at(self.crown.strip))
+        (self.crown.strip.value() > 0.05).then(|| geometry.strip_at(self.crown.strip.value()))
     }
 
     pub fn crown_contains(&self, point: Point<f64, Logical>) -> bool {
@@ -180,7 +199,7 @@ impl SpatilState {
     /// How much of the card's time the drawn-out strip covers, 0..1.
     pub fn crown_covers_time(&self) -> f32 {
         match self.crown.geometry {
-            Some(g) if g.in_card => self.crown.strip_alpha.value.clamp(0.0, 1.0),
+            Some(g) if g.in_card => self.crown.strip_alpha.value().clamp(0.0, 1.0),
             _ => 0.0,
         }
     }
@@ -192,7 +211,7 @@ impl SpatilState {
         let Some(geometry) = self.crown.geometry else {
             return false;
         };
-        let strip_open = self.crown.strip > 0.6;
+        let strip_open = self.crown.strip.value() > 0.6;
         if strip_open && inside(geometry.art, point) {
             tracing::info!("familiar: fly to the playing window (placeholder; not built yet)");
         } else if strip_open && inside(geometry.next, point) {
@@ -219,12 +238,15 @@ impl SpatilState {
         let dt = dt_ms / 1000.0;
         let card_settled = self.orb.open_value() < 0.02 || self.orb.open_value() > 0.98;
         let out = self.crown.hovered && self.crown.now.is_some() && self.banner_rect().is_none() && card_settled;
+        // A banner lies over the side the crown faces, so the crown steps aside for it.
+        let visible = self.crown.now.is_some() && self.banner_rect().is_none();
         let crown = &mut self.crown;
-        crown.shown.tick(crown.now.is_some() as u8 as f32, stiffness, damping, dt);
-        crown.strip_alpha.tick(out as u8 as f32, stiffness, damping, dt);
-        let (v, vel) = spring_step(crown.strip, crown.strip_velocity, out as u8 as f32, stiffness, damping, dt);
-        crown.strip = v.clamp(0.0, 1.05);
-        crown.strip_velocity = vel;
+        crown.shown.tick(visible as u8 as f32, stiffness, damping, dt);
+        let target = out as u8 as f32;
+        crown.strip.set(target);
+        crown.strip.tick(dt_ms);
+        crown.strip_alpha.set(target);
+        crown.strip_alpha.tick(dt_ms);
     }
 
     pub fn crown_rect(&self) -> Option<[f32; 4]> {
@@ -236,7 +258,7 @@ impl SpatilState {
             "now_playing": self.crown.now.as_ref().map(|n| n.report()),
             "has_art": self.crown.has_art,
             "hovered": self.crown.hovered,
-            "strip": self.crown.strip,
+            "strip": self.crown.strip.value(),
             "crown_rect": self.crown.geometry.map(|g| g.crown),
         })
     }
@@ -261,8 +283,8 @@ impl SpatilState {
             return;
         };
         let s = orb[2] / 56.0;
-        let strip_alpha = self.crown.strip_alpha.value.clamp(0.0, 1.0);
-        let strip = geometry.strip_at(self.crown.strip);
+        let strip_alpha = self.crown.strip_alpha.value().clamp(0.0, 1.0);
+        let strip = geometry.strip_at(self.crown.strip.value());
         let playing = now.playback == Playback::Playing;
         let (strip_color, raised) = if geometry.in_card {
             (parse_hex_color("#22272F"), 0.0)
@@ -287,7 +309,7 @@ impl SpatilState {
             frame.crown = look;
         }
 
-        let text_alpha = strip_alpha * ((self.crown.strip - geometry.reach(geometry.text[0])) / 0.06).clamp(0.0, 1.0);
+        let text_alpha = strip_alpha * ((self.crown.strip.value() - geometry.reach(geometry.text[0])) / 0.06).clamp(0.0, 1.0);
         if text_alpha <= 0.01 {
             return;
         }

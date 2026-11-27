@@ -1,5 +1,6 @@
 //! Familiar's agent phases, voice levels and complications; driven over IPC until an agent exists.
 
+use crate::shell::motion::{EASE_IN_OUT, Tween, cubic_bezier};
 use crate::shell::orb::Eased;
 
 pub const MARKS: usize = 12;
@@ -7,6 +8,45 @@ const MARK_SAMPLE_MS: f32 = 40.0;
 pub const THINK_STEP_MS: f32 = 500.0;
 pub const DONE_MS: f32 = 1200.0;
 const TRANSCRIPT_CHARS: usize = 2048;
+/// A level set over IPC drives the marks for this long; after that the stand-in voice does.
+const LEVEL_FRESH_MS: f32 = 1000.0;
+/// `.arc{transition:stroke-dasharray .7s cubic-bezier(.3,.8,.2,1)}`
+const ARC_MS: f32 = 700.0;
+const ARC_CURVE: [f32; 4] = [0.3, 0.8, 0.2, 1.0];
+const SWEEP_CURVE: [f32; 4] = [0.3, 0.85, 0.2, 1.0];
+
+/// `VoiceProto.dc.html`'s sample conversation and timers, standing in for the agent.
+pub mod mock {
+    pub const SAID: &str =
+        "Group my terminal and browser into a research cluster, push it back, and bring my editor to me";
+    pub const STEPS: [&str; 3] = [
+        "Group kitty and Firefox into a new constellation, Research",
+        "Push Research two layers back",
+        "Bring Code (orb.wgsl) in front of you",
+    ];
+    pub const ANSWER: &str = "Done. Research is behind you, Code is in front.";
+    pub const WORD_MS: f32 = 210.0;
+    pub const THINK_MS: f32 = 1500.0;
+    pub const STEP_MS: f32 = 1100.0;
+    pub const WORK_MS: f32 = 3700.0;
+    pub const ANSWER_MS: f32 = 4500.0;
+}
+
+/// The `vu` keyframes: dash length along a voice mark, in design units, per keyframe offset.
+const VU_KEYS: [(f32, f32); 5] = [(0.0, 2.5), (0.3, 8.0), (0.55, 4.0), (0.8, 11.0), (1.0, 2.5)];
+/// `.vu0`..`.vu3`: each mark's class is `(i * 7) % 4`.
+const VU_SECONDS: [f32; 4] = [0.9, 1.15, 0.8, 1.3];
+const VU_DELAY: [f32; 4] = [-0.2, -0.55, -0.1, -0.7];
+
+/// The mockup's stand-in voice for mark `i` at `t` seconds into the phase, as a 0..1 level.
+pub fn vu_level(i: usize, t: f32) -> f32 {
+    let class = (i * 7) % 4;
+    let p = ((t - VU_DELAY[class]) / VU_SECONDS[class]).rem_euclid(1.0);
+    let k = VU_KEYS.windows(2).find(|w| p <= w[1].0).unwrap_or(&VU_KEYS[3..5]);
+    let local = (p - k[0].0) / (k[1].0 - k[0].0);
+    let dash = k[0].1 + (k[1].1 - k[0].1) * cubic_bezier(EASE_IN_OUT, local);
+    (dash - 2.5) / 12.3
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentPhase {
@@ -82,24 +122,9 @@ pub fn transition(phase: AgentPhase, event: AgentEvent, plan_len: usize) -> Opti
     }
 }
 
-/// `cubic-bezier(.3,.85,.2,1)`, the Done sweep's curve, solved for y at time `t`.
+/// `cubic-bezier(.3,.85,.2,1)`, the Done sweep's curve.
 pub fn sweep_curve(t: f32) -> f32 {
-    let (x1, y1, x2, y2) = (0.3_f32, 0.85_f32, 0.2_f32, 1.0_f32);
-    let t = t.clamp(0.0, 1.0);
-    let bez = |a: f32, b: f32, s: f32| {
-        let u = 1.0 - s;
-        3.0 * u * u * s * a + 3.0 * u * s * s * b + s * s * s
-    };
-    let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
-    for _ in 0..24 {
-        let mid = (lo + hi) * 0.5;
-        if bez(x1, x2, mid) < t {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    bez(y1, y2, (lo + hi) * 0.5)
+    cubic_bezier(SWEEP_CURVE, t)
 }
 
 /// Everything the orb shader needs from the agent for one frame.
@@ -147,10 +172,13 @@ pub struct AgentRuntime {
     ring_hub: Eased,
     solid_hub: Eased,
     arc: Eased,
-    progress: Eased,
+    progress: Tween,
     alert: Eased,
     focus_ring: Eased,
     privacy_light: Eased,
+    /// The phase came from IPC, so the stand-in timeline keeps its hands off.
+    scripted: bool,
+    level_fresh_ms: f32,
 }
 
 impl AgentRuntime {
@@ -158,9 +186,18 @@ impl AgentRuntime {
         self.phase
     }
 
+    /// A phase set from outside (IPC, the agent later): the stand-in timeline stops.
+    pub fn script_phase(&mut self, phase: AgentPhase) {
+        self.scripted = true;
+        self.set_phase(phase);
+    }
+
     pub fn set_phase(&mut self, phase: AgentPhase) {
         if !phase.same_kind(self.phase) {
             self.phase_ms = 0.0;
+        }
+        if matches!(phase, AgentPhase::Working { .. }) && !matches!(self.phase, AgentPhase::Working { .. }) {
+            self.progress = Tween::new(0.0, ARC_MS, ARC_CURVE);
         }
         // The Done sweep starts with the hands at twelve, at full length.
         if phase == AgentPhase::Done && self.phase != AgentPhase::Done {
@@ -179,6 +216,10 @@ impl AgentRuntime {
                 if event == AgentEvent::Undo {
                     tracing::info!("familiar: undo requested (placeholder; no agent yet)");
                 }
+                self.scripted = false;
+                if next == AgentPhase::Listening {
+                    self.transcript.clear();
+                }
                 self.set_phase(next);
                 true
             }
@@ -189,6 +230,7 @@ impl AgentRuntime {
     pub fn set_levels(&mut self, mic: f32, voice: f32) {
         self.mic_level = mic.clamp(0.0, 1.0);
         self.voice_level = voice.clamp(0.0, 1.0);
+        self.level_fresh_ms = LEVEL_FRESH_MS;
     }
 
     pub fn set_transcript(&mut self, text: &str) {
@@ -225,7 +267,12 @@ impl AgentRuntime {
     }
 
     /// Mark 0 (twelve) is live; mark i is the level i samples ago, so a voice runs clockwise.
+    /// With no level source yet, the marks play the mockup's own `vu` keyframes.
     pub fn marks(&self) -> [f32; MARKS] {
+        if self.level_fresh_ms <= 0.0 {
+            let t = self.phase_ms / 1000.0;
+            return std::array::from_fn(|i| vu_level(i, t).clamp(0.0, 1.0));
+        }
         let f = (self.sample_ms / MARK_SAMPLE_MS).clamp(0.0, 1.0);
         std::array::from_fn(|i| {
             let v = if i == 0 {
@@ -241,8 +288,12 @@ impl AgentRuntime {
         use AgentPhase::*;
         let dt = dt_ms / 1000.0;
         self.phase_ms += dt_ms;
+        self.level_fresh_ms = (self.level_fresh_ms - dt_ms).max(0.0);
         if self.phase == Done && self.phase_ms >= DONE_MS {
             self.set_phase(Idle);
+        }
+        if !self.scripted {
+            self.stand_in();
         }
         let phase = self.phase;
         let on = |b: bool| b as u8 as f32;
@@ -263,8 +314,9 @@ impl AgentRuntime {
         spring(&mut self.privacy_light, on(self.privacy));
         if let Working { step, total } = phase {
             let fraction = if total == 0 { 0.0 } else { (step.min(total) as f32) / total as f32 };
-            spring(&mut self.progress, fraction);
+            self.progress.set(fraction);
         }
+        self.progress.tick(dt_ms);
         if phase == Done {
             self.park.snap(1.0 - sweep_curve(self.phase_ms / DONE_MS));
         } else {
@@ -288,11 +340,45 @@ impl AgentRuntime {
             ring_hub: unit(&self.ring_hub),
             solid_hub: unit(&self.solid_hub),
             arc: unit(&self.arc),
-            progress: unit(&self.progress),
+            progress: self.progress.value().clamp(0.0, 1.0),
             marks: self.marks(),
             alert: unit(&self.alert),
             focus: unit(&self.focus_ring),
             privacy: unit(&self.privacy_light),
+        }
+    }
+
+    /// `VoiceProto`'s timers: words arrive while listening, a plan after thinking, steps tick
+    /// by while working, then the answer, then the sweep home.
+    fn stand_in(&mut self) {
+        use AgentPhase::*;
+        let words: Vec<&str> = mock::SAID.split(' ').collect();
+        match self.phase {
+            Listening => {
+                let n = ((self.phase_ms / mock::WORD_MS) as usize).min(words.len());
+                self.transcript = words[..n].join(" ");
+            }
+            Thinking => {
+                self.transcript = mock::SAID.to_string();
+                if self.phase_ms >= mock::THINK_MS {
+                    if self.plan.is_empty() {
+                        self.plan = mock::STEPS.iter().map(|s| s.to_string()).collect();
+                    }
+                    self.set_phase(WaitingForYou);
+                }
+            }
+            Working { total, .. } => {
+                let step = ((self.phase_ms / mock::STEP_MS) as u32).min(total);
+                self.phase = Working { step, total };
+                if self.phase_ms >= mock::WORK_MS {
+                    if self.answer.is_empty() {
+                        self.answer = mock::ANSWER.to_string();
+                    }
+                    self.set_phase(Answering);
+                }
+            }
+            Answering if self.phase_ms >= mock::ANSWER_MS => self.set_phase(Done),
+            _ => {}
         }
     }
 
@@ -303,6 +389,7 @@ impl AgentRuntime {
         };
         serde_json::json!({
             "phase": self.phase.as_str(),
+            "stand_in": !self.scripted,
             "phase_ms": self.phase_ms,
             "step": step,
             "total": total,
@@ -389,7 +476,7 @@ mod tests {
     #[test]
     fn thinking_ticks_twelve_discrete_steps_per_six_seconds() {
         let mut agent = AgentRuntime::default();
-        agent.set_phase(Thinking);
+        agent.script_phase(Thinking);
         let mut angles = Vec::new();
         for _ in 0..360 {
             let look = agent.tick(1000.0 / 60.0, 220.0, 22.0);
@@ -404,7 +491,7 @@ mod tests {
     #[test]
     fn marks_carry_the_voice_clockwise_from_twelve() {
         let mut agent = AgentRuntime::default();
-        agent.set_phase(Listening);
+        agent.script_phase(Listening);
         agent.set_levels(1.0, 0.0);
         for _ in 0..30 {
             agent.tick(1000.0 / 60.0, 220.0, 22.0);
@@ -421,13 +508,61 @@ mod tests {
     #[test]
     fn working_progress_eases_to_each_step() {
         let mut agent = AgentRuntime::default();
-        agent.set_phase(Working { step: 1, total: 4 });
+        agent.script_phase(Working { step: 1, total: 4 });
         let mut look = AgentLook::default();
         for _ in 0..120 {
             look = agent.tick(1000.0 / 60.0, 220.0, 22.0);
         }
         assert!((look.progress - 0.25).abs() < 0.01, "{}", look.progress);
         assert!(look.arc > 0.99);
+    }
+
+    #[test]
+    fn holding_the_orb_plays_the_prototype_through_without_an_agent() {
+        let mut agent = AgentRuntime::default();
+        let frame = 1000.0 / 60.0;
+        let run = |agent: &mut AgentRuntime, ms: f32| {
+            for _ in 0..(ms / frame) as usize {
+                agent.tick(frame, 220.0, 22.0);
+            }
+        };
+        agent.apply(Hold);
+        run(&mut agent, 1000.0);
+        assert!(agent.transcript.split(' ').count() >= 4, "words arrive: {:?}", agent.transcript);
+        agent.apply(Release);
+        assert_eq!(agent.phase(), Thinking);
+        run(&mut agent, 1600.0);
+        assert_eq!(agent.phase(), WaitingForYou, "a plan after 1.5s");
+        assert_eq!(agent.plan.len(), 3);
+        agent.apply(DoIt);
+        run(&mut agent, 1200.0);
+        assert_eq!(agent.phase(), Working { step: 1, total: 3 }, "a step every 1.1s");
+        run(&mut agent, 2600.0);
+        assert_eq!(agent.phase(), Answering, "the answer at 3.7s");
+        run(&mut agent, 4600.0);
+        assert_eq!(agent.phase(), Done, "the sweep home after 4.5s");
+    }
+
+    #[test]
+    fn a_scripted_phase_stays_put() {
+        let mut agent = AgentRuntime::default();
+        agent.script_phase(Thinking);
+        for _ in 0..200 {
+            agent.tick(16.0, 220.0, 22.0);
+        }
+        assert_eq!(agent.phase(), Thinking);
+    }
+
+    #[test]
+    fn without_a_level_the_marks_play_the_vu_keyframes() {
+        assert!(vu_level(0, -0.2).abs() < 1e-3, "vu0 starts its cycle at 2.5");
+        let peak = (0.8 * 0.9) - 0.2;
+        assert!((vu_level(0, peak) - 1.0 / 12.3 * 8.5).abs() < 1e-3, "11 at 80%: {}", vu_level(0, peak));
+        let mut agent = AgentRuntime::default();
+        agent.script_phase(Listening);
+        agent.tick(16.0, 220.0, 22.0);
+        let marks = agent.marks();
+        assert!(marks.iter().any(|m| (m - marks[0]).abs() > 0.05), "marks differ: {marks:?}");
     }
 
     #[test]

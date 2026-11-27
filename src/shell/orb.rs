@@ -295,6 +295,8 @@ impl SpatilState {
             facing: self.orb_corner().facing(),
             agent: look,
             crown: Default::default(),
+            surface_alpha: 1.0,
+            shadow: [0.0; 3],
         });
 
         self.cursor_hidden = flight.hide_real_cursor;
@@ -673,7 +675,7 @@ mod tests {
         );
 
         let end = pose(1.0);
-        let tip = (1000.0 + 0.86 * 28.0, 900.0);
+        let tip = (1000.0 + SECOND_HAND * 28.0, 900.0);
         assert!((end.cursor_pos.0 - tip.0).abs() < 0.01, "{:?}", end.cursor_pos);
         assert!((end.cursor_pos.1 - tip.1).abs() < 0.01, "{:?}", end.cursor_pos);
         assert!(end.hand > 0.99, "hand {}", end.hand);

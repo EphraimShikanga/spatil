@@ -7,6 +7,7 @@ pub mod crown;
 pub mod launch;
 pub mod menu;
 pub mod module;
+pub mod motion;
 pub mod mpris;
 pub mod network;
 pub mod power;

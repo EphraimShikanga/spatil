@@ -42,6 +42,11 @@ struct OrbUniform {
     glyphs: vec4<f32>,
     // x, y, width, played fraction
     line: vec4<f32>,
+    // card/banner surface: alpha, shadow alpha, shadow offset y px, shadow blur px
+    surface: vec4<f32>,
+    face_hover: vec4<f32>,
+    face_ambient: vec4<f32>,
+    hand_ambient: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -52,7 +57,6 @@ var art_texture: texture_2d<f32>;
 var art_sampler: sampler;
 
 const TAU: f32 = 6.28318530718;
-const SECOND_HAND: f32 = 0.86;
 const SHADOW: f32 = 28.0;
 // Design units are px at a 56px orb; the shader's face has radius 1.
 const UNIT: f32 = 1.0 / 28.0;
@@ -109,13 +113,23 @@ fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
     return mix(b, a, h) - k * h * (1.0 - h);
 }
 
-// A hand along `dir` from `tail` (behind the hub) to `tip`, narrowing from `root` to `point`.
-fn hand_sd(p: vec2<f32>, dir: vec2<f32>, tail: f32, tip: f32, root: f32, point: f32) -> f32 {
-    let along = dot(p, dir);
-    let across = abs(dot(p, vec2<f32>(dir.y, -dir.x)));
-    let h = clamp(along, tail, tip);
-    let half_width = mix(root, point, clamp(h / tip, 0.0, 1.0));
-    return length(vec2<f32>(along - h, across)) - half_width;
+// iq's trapezoid: half-widths `r1` at y = -he and `r2` at y = +he.
+fn trapezoid_sd(q: vec2<f32>, r1: f32, r2: f32, he: f32) -> f32 {
+    let k1 = vec2<f32>(r2, he);
+    let k2 = vec2<f32>(r2 - r1, 2.0 * he);
+    let p = vec2<f32>(abs(q.x), q.y);
+    let ca = vec2<f32>(p.x - min(p.x, select(r2, r1, p.y < 0.0)), abs(p.y) - he);
+    let cb = p - k1 + k2 * clamp(dot(k1 - p, k2) / dot(k2, k2), 0.0, 1.0);
+    let s = select(1.0, -1.0, cb.x < 0.0 && ca.y < 0.0);
+    return s * sqrt(min(dot(ca, ca), dot(cb, cb)));
+}
+
+// A hand drawn as the design's polygon: from `tail` to `tip` along `dir`, half-width `root`
+// at the tail end and `point` at the tip, flat-ended. Units: design px.
+fn polygon_hand(p: vec2<f32>, dir: vec2<f32>, tail: f32, tip: f32, root: f32, point: f32) -> f32 {
+    let q = vec2<f32>(dot(p, vec2<f32>(dir.y, -dir.x)), dot(p, dir));
+    let he = max((tip - tail) * 0.5, 1e-3);
+    return trapezoid_sd(q - vec2<f32>(0.0, tail + he), root, point, he);
 }
 
 fn to_srgb(c: vec3<f32>) -> vec3<f32> {
@@ -182,7 +196,8 @@ fn glyph_sd(pixel: vec2<f32>, centre: vec2<f32>, which: i32) -> f32 {
         d = min(rounded_box(q - vec2<f32>(8.0, 12.0), vec2<f32>(2.0, 7.0), 1.0),
                 rounded_box(q - vec2<f32>(16.0, 12.0), vec2<f32>(2.0, 7.0), 1.0));
     } else if (which == 1) {
-        d = tri_sd(q, vec2<f32>(8.0, 5.0), vec2<f32>(8.0, 19.0), vec2<f32>(19.0, 12.0));
+        // No play glyph exists in the design: Next's own triangle, centred in the box.
+        d = tri_sd(q, vec2<f32>(7.5, 5.0), vec2<f32>(16.5, 12.0), vec2<f32>(7.5, 19.0));
     } else {
         d = min(tri_sd(q, vec2<f32>(6.0, 5.0), vec2<f32>(15.0, 12.0), vec2<f32>(6.0, 19.0)),
                 rounded_box(q - vec2<f32>(17.25, 12.0), vec2<f32>(1.25, 7.0), 1.0));
@@ -214,8 +229,9 @@ fn mark_level(k: i32) -> f32 {
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let orb_lo = orb.rect.xy - vec2<f32>(SHADOW);
     let orb_hi = orb.rect.xy + orb.rect.zw + vec2<f32>(SHADOW);
-    let card_lo = orb.card.xy - vec2<f32>(SHADOW);
-    let card_hi = orb.card.xy + orb.card.zw + vec2<f32>(SHADOW);
+    let reach = max(SHADOW, orb.surface.w + orb.surface.z);
+    let card_lo = orb.card.xy - vec2<f32>(reach);
+    let card_hi = orb.card.xy + orb.card.zw + vec2<f32>(reach);
     var lo = min(orb_lo, card_lo);
     var hi = max(orb_hi, card_hi);
     if (orb.strip_style.x > 0.001 && orb.strip.z > 0.5) {
@@ -239,7 +255,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let half = max(orb.rect.z, 1.0) * 0.5;
     let centre = orb.rect.xy + vec2<f32>(half);
-    let radius_px = half * (1.0 + orb.hover * 0.04 * (1.0 - orb.open));
+    // Hover: the face grows from r28 to r29.2.
+    let radius_px = half * (1.0 + orb.hover * (1.2 / 28.0) * (1.0 - orb.open));
 
     let card_half = orb.card.zw * 0.5;
     let card_sd = rounded_box(in.pixel - (orb.card.xy + card_half), card_half, orb.shape.x);
@@ -258,21 +275,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let ambient = orb.ambient;
     let accent = orb.accent_color.rgb;
-    let lume = mix(accent, vec3<f32>(0.9, 1.0, 0.95), 0.6);
     let body = orb.body_color.rgb;
 
     var color = vec4<f32>(0.0);
 
-    let blur = mix(10.0, SHADOW - 4.0, orb.open);
-    let shadow_sd = smooth_min(
-        length(in.pixel - centre - vec2<f32>(0.0, 3.0)) - radius_px,
-        rounded_box(in.pixel - (orb.card.xy + card_half) - vec2<f32>(0.0, 6.0), card_half, orb.shape.x),
-        orb.shape.y,
-    );
-    let s = 1.0 - smoothstep(-blur * 0.4, blur, shadow_sd);
-    color = vec4<f32>(0.0, 0.0, 0.0, s * s * mix(0.35, 0.5, orb.open) * orb.body_color.a);
+    // `box-shadow: 0 <offset> <blur> rgba(0,0,0,a)`: a Gaussian of sigma blur/2 about the edge.
+    if (orb.surface.y > 0.001) {
+        let shadow_sd = rounded_box(
+            in.pixel - (orb.card.xy + card_half) - vec2<f32>(0.0, orb.surface.z),
+            card_half,
+            orb.shape.x,
+        );
+        let sigma = max(orb.surface.w * 0.5, 1.0);
+        let s = 1.0 - smoothstep(-2.0 * sigma, 2.0 * sigma, shadow_sd);
+        color = vec4<f32>(0.0, 0.0, 0.0, s * orb.surface.y * orb.body_color.a);
+    }
 
-    let surface = fill(surface_sd, aa_px);
+    let surface = fill(surface_sd, aa_px) * orb.surface.x;
     if (surface > 0.0) {
         let card_rgb = body * 1.3;
         color = over(color, vec4<f32>(card_rgb, surface * orb.body_color.a));
@@ -333,13 +352,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let face = fill(d - 1.0, aa);
     if (face > 0.0) {
-        // Multiplicative: blending is linear, so an additive lift reads far brighter than it looks.
-        let lift = 1.0 + orb.hover * 0.35 * (1.0 - ambient) * (1.0 - orb.open);
-        let shade = mix(1.1, 0.88, smoothstep(0.0, 1.0, d));
-        var f = vec4<f32>(body * shade * lift * mix(1.0, 0.5, ambient), face * orb.body_color.a);
+        // OrbStates.dc.html: #12161C at rest, #1A1F27 hovered, #0C0E12 ambient, all flat.
+        let lift = orb.hover * (1.0 - ambient) * (1.0 - orb.open);
+        let face_rgb = mix(mix(body, orb.face_hover.rgb, lift), orb.face_ambient.rgb, ambient);
+        var f = vec4<f32>(face_rgb, face * orb.body_color.a);
 
         let ring = fill(abs(d - 27.0 * UNIT) - 0.4 * UNIT, aa);
-        f = vec4<f32>(mix(f.rgb, veil(f.rgb, vec3<f32>(1.0), mix(0.10, 0.07, ambient)), ring), f.a);
+        let ring_alpha = mix(mix(0.10, 0.14, lift), 0.07, ambient);
+        f = vec4<f32>(mix(f.rgb, veil(f.rgb, vec3<f32>(1.0), ring_alpha), ring), f.a);
 
         // The twelve marks: hour indices at rest, voice bars from the rim while it listens or speaks.
         let step = TAU / 12.0;
@@ -356,13 +376,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             MARK_OUTER,
             mix(rest_half, 0.95 * UNIT, voice),
         );
-        let rest_toward = mix(vec3<f32>(1.0), lume, ambient);
         let rest_alpha = select(0.34, 0.62, quarter) * mix(1.0, 0.7, ambient) * mix(1.0, 0.28, dim);
-        let rest_rgb = veil(f.rgb, rest_toward, rest_alpha);
+        let rest_rgb = veil(f.rgb, vec3<f32>(1.0), rest_alpha);
         let mark_rgb = mix(rest_rgb, mix(orb.ink.rgb, accent, tint), voice);
         f = vec4<f32>(mix(f.rgb, mark_rgb, fill(mark, aa)), f.a);
-        let tick_glow = exp(-max(mark, 0.0) * 90.0) * ambient * 0.25 * (1.0 - voice);
-        f = over(f, vec4<f32>(rest_toward, tick_glow));
 
         if (orb.warn > 0.001) {
             let band = arc_sd(p, 24.5 * UNIT, TAU * 5.0 / 12.0, TAU / 6.0) - 1.3 * UNIT;
@@ -383,32 +400,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Parking scales the angle, so leaving twelve is always a clockwise sweep to the time.
         let minute = dial(TAU * fract(secs / 3600.0) * (1.0 - park));
         let hour = dial(TAU * fract(secs / 43200.0) * (1.0 - park));
-        let ink = mix(orb.hand_ink.rgb, lume, ambient);
+        let hand_rgb = mix(orb.hand_ink.rgb, orb.hand_ambient.rgb, ambient);
         let reach = 1.0 - fold;
+        // The polygons are in design px; `pd` is the same point in those units.
+        let pd = p * 28.0;
+        let px_aa = aa * 28.0;
 
         if (orb.dial > 0.001 && reach > 0.001) {
-            let hour_tip = 0.5 * reach;
-            let minute_tip = 0.78 * reach;
-            let drop = vec2<f32>(0.0, 0.035);
-            let shadow_h = hand_sd(p + drop, hour, 0.0, hour_tip, 0.05, 0.034);
-            let shadow_m = hand_sd(p + drop, minute, -0.1 * reach, minute_tip, 0.036, 0.022);
-            let hand_shadow = fill(min(shadow_h, shadow_m) - 0.015, 0.06) * (1.0 - ambient);
-            f = vec4<f32>(f.rgb * (1.0 - hand_shadow * 0.5), f.a);
+            // Orb.dc.html: the hands again, offset (0.5, 1) and filled black at 45%.
+            let sp = pd - vec2<f32>(0.5, -1.0);
+            let shadow = min(
+                polygon_hand(sp, hour, 0.0, 14.0 * reach, 1.4, 0.95),
+                polygon_hand(sp, minute, -2.8 * reach, 21.8 * reach, 1.05, 0.65),
+            );
+            let shade = fill(shadow, px_aa) * orb.dial * (1.0 - ambient);
+            f = vec4<f32>(mix(f.rgb, veil(f.rgb, vec3<f32>(0.0), 0.45), shade), f.a);
 
             let hands = min(
-                hand_sd(p, hour, 0.0, hour_tip, 0.05, 0.034),
-                hand_sd(p, minute, -0.1 * reach, minute_tip, 0.036, 0.022),
+                polygon_hand(pd, hour, 0.0, 14.0 * reach, 1.4, 0.95),
+                polygon_hand(pd, minute, -2.8 * reach, 21.8 * reach, 1.05, 0.65),
             );
-            let glow = exp(-max(hands, 0.0) * 70.0) * ambient * 0.3;
-            f = over(f, vec4<f32>(ink, max(fill(hands, aa), glow) * orb.dial));
+            f = over(f, vec4<f32>(hand_rgb, fill(hands, px_aa) * orb.dial));
         }
 
         if (orb.hand > 0.001) {
+            // The Ambient second hand: a needle to 24 with a counterweight 5.5 behind the hub.
             let second = dial(TAU * fract(secs / 60.0));
-            let reach = SECOND_HAND * orb.hand;
-            let needle = hand_sd(p, second, -0.22 * orb.hand, reach, 0.016, 0.012);
-            let weight = length(p + second * 0.15 * orb.hand) - 0.05 * orb.hand;
-            f = over(f, vec4<f32>(accent, fill(min(needle, weight), aa) * orb.hand));
+            let g = orb.hand;
+            let needle = polygon_hand(pd, second, -5.0 * g, 24.0 * g, 0.55, 0.45);
+            let weight = length(pd + second * 5.5 * g) - 1.8 * g;
+            f = over(f, vec4<f32>(accent, fill(min(needle, weight), px_aa) * g));
         }
 
         // One hub morphing between three looks: solid with a dark pin, a ring, all accent.

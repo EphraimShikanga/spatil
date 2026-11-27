@@ -42,7 +42,8 @@ impl Corner {
     }
 }
 
-pub const SECOND_HAND: f32 = 0.86;
+/// The ambient second hand's tip, 24 of the face's 28 design units.
+pub const SECOND_HAND: f32 = 24.0 / 28.0;
 
 pub struct OrbParams {
     pub enabled: bool,
@@ -64,11 +65,24 @@ pub struct OrbPalette {
     pub amber: [f32; 4],
     pub quiet: [f32; 4],
     pub deep: [f32; 4],
+    pub face_hover: [f32; 4],
+    pub face_ambient: [f32; 4],
+    pub hand_ambient: [f32; 4],
 }
 
 impl OrbPalette {
-    fn new() -> Self {
+    /// The hover and ambient faces are the design's hexes for its own `#12161C`, scaled with
+    /// whatever `familiar_color` is set to.
+    fn new(body: [f32; 4]) -> Self {
+        let rest = parse_hex_color("#12161C");
+        let follow = |hex: &str| {
+            let c = parse_hex_color(hex);
+            std::array::from_fn(|i| if i == 3 { 1.0 } else { c[i] * body[i] / rest[i].max(1e-4) })
+        };
         Self {
+            face_hover: follow("#1A1F27"),
+            face_ambient: follow("#0C0E12"),
+            hand_ambient: parse_hex_color("#D7E3F2"),
             ink: parse_hex_color("#F2F4F8"),
             hand_ink: parse_hex_color("#F3F5F8"),
             dark: parse_hex_color("#0B0D10"),
@@ -97,7 +111,7 @@ impl OrbParams {
             digits: shell.familiar_clock.eq_ignore_ascii_case("digital"),
             body_color: parse_hex_color(&shell.familiar_color),
             accent_color: parse_hex_color(&shell.familiar_accent),
-            palette: OrbPalette::new(),
+            palette: OrbPalette::new(parse_hex_color(&shell.familiar_color)),
         }
     }
 }
@@ -121,6 +135,10 @@ pub struct OrbFrame {
     pub facing: f32,
     pub agent: crate::shell::agent::AgentLook,
     pub crown: crate::shell::crown::CrownLook,
+    /// Opacity of the card/banner surface; the banner fades in and out with it.
+    pub surface_alpha: f32,
+    /// The surface's `box-shadow`: alpha, y offset px, blur px.
+    pub shadow: [f32; 3],
 }
 
 #[repr(C)]
@@ -159,6 +177,10 @@ pub struct OrbUniform {
     pub strip_art: [f32; 4],
     pub glyphs: [f32; 4],
     pub line: [f32; 4],
+    pub surface: [f32; 4],
+    pub face_hover: [f32; 4],
+    pub face_ambient: [f32; 4],
+    pub hand_ambient: [f32; 4],
 }
 
 impl OrbUniform {
@@ -199,6 +221,10 @@ impl OrbUniform {
             strip_art: frame.crown.strip_art,
             glyphs: frame.crown.glyphs,
             line: frame.crown.line,
+            surface: [frame.surface_alpha, frame.shadow[0], frame.shadow[1], frame.shadow[2]],
+            face_hover: palette.face_hover,
+            face_ambient: palette.face_ambient,
+            hand_ambient: palette.hand_ambient,
         }
     }
 }
