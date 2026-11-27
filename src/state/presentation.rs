@@ -7,7 +7,9 @@ use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::scene::WORLD_SCALE;
 use crate::scene::animation::{self, AnimSnapshot, Easing, OnComplete};
-use crate::scene::components::{Billboard, Presentation, Transform, WaylandSurface, WindowState};
+use crate::scene::components::{
+    Billboard, Presentation, Transform, Transient, WaylandSurface, WindowState,
+};
 use crate::state::SpatilState;
 
 impl SpatilState {
@@ -185,8 +187,12 @@ impl SpatilState {
     pub fn dismiss_on_backdrop(&mut self, hit: Option<Entity>) -> bool {
         let window = hit.map(|entity| self.window_entity(entity));
         for entity in self.spotlit_windows() {
-            if window != Some(entity) {
-                self.return_to_ambient(entity);
+            if window == Some(entity) {
+                continue;
+            }
+            match self.world.satisfies::<&Transient>(entity).unwrap_or(false) {
+                true => self.close_window(entity),
+                false => self.return_to_ambient(entity),
             }
         }
         let Some((raised, _)) = self.modal_window() else {
@@ -319,6 +325,25 @@ impl SpatilState {
         if ambient && self.config.scene_graph.scene_mode() == crate::scene::mode::SceneMode::Aether {
             let _ = self.world.insert_one(entity, Billboard);
         }
+    }
+
+    /// Asks the client to close; the window leaves when it destroys its toplevel.
+    pub fn close_window(&mut self, entity: Entity) {
+        if let Some(toplevel) = self.toplevel_for(entity) {
+            toplevel.send_close();
+        }
+    }
+
+    /// Brings a window to the user: spotlit if it was out in the world, and focused.
+    pub fn activate_window(&mut self, entity: Entity) {
+        let raised = self
+            .world
+            .get::<&Presentation>(entity)
+            .is_ok_and(|p| p.state != WindowState::Ambient);
+        if !raised {
+            self.raise_window(entity, WindowState::Spotlit);
+        }
+        self.focus_entity(entity);
     }
 
     fn toplevel_for(&self, entity: Entity) -> Option<ToplevelSurface> {

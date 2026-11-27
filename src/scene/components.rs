@@ -81,6 +81,10 @@ pub enum WindowState {
 
 pub struct Spotlight;
 
+/// A control application the orb opened: dismissing it closes it instead of
+/// returning it to the world.
+pub struct Transient;
+
 pub struct Presentation {
     pub state: WindowState,
     pub ambient: AnimSnapshot,
