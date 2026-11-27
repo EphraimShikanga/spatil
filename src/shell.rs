@@ -6,6 +6,7 @@ pub mod module;
 pub mod network;
 pub mod power;
 pub mod orb;
+pub mod snapshot;
 pub mod tooltip;
 pub mod tray;
 

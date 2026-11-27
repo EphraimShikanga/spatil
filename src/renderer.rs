@@ -10,6 +10,7 @@ pub mod particles;
 pub mod pipeline;
 pub mod scene_params;
 pub mod shadow;
+pub mod snapshot;
 pub mod text;
 pub mod texture;
 

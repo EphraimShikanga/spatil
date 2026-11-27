@@ -38,6 +38,10 @@ fn main() {
         shell::tray::probe();
         return;
     }
+    if let Some(dir) = std::env::args().skip_while(|a| a != "--hud-snapshot").nth(1) {
+        shell::snapshot::run(std::path::Path::new(&dir));
+        return;
+    }
     if std::env::args().any(|a| a == "--font-probe") {
         let config = SpatilConfig::load();
         text::probe(&config.shell.font, config.shell.font_size);
