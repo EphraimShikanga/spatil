@@ -27,10 +27,29 @@ struct OrbUniform {
     dark: vec4<f32>,
     amber: vec4<f32>,
     quiet: vec4<f32>,
+    deep: vec4<f32>,
+    // The now-playing crown and its strip, in pixels.
+    crown: vec4<f32>,
+    crown_art: vec4<f32>,
+    // alpha, art present, crown radius, art radius
+    crown_style: vec4<f32>,
+    strip: vec4<f32>,
+    // alpha, raised (shadow and top highlight), playing, radius
+    strip_style: vec4<f32>,
+    strip_color: vec4<f32>,
+    strip_art: vec4<f32>,
+    // pause/play centre, next centre
+    glyphs: vec4<f32>,
+    // x, y, width, played fraction
+    line: vec4<f32>,
 };
 
 @group(0) @binding(0)
 var<uniform> orb: OrbUniform;
+@group(0) @binding(1)
+var art_texture: texture_2d<f32>;
+@group(0) @binding(2)
+var art_sampler: sampler;
 
 const TAU: f32 = 6.28318530718;
 const SECOND_HAND: f32 = 0.86;
@@ -131,6 +150,61 @@ fn arc_sd(p: vec2<f32>, radius: f32, start: f32, span: f32) -> f32 {
     return ends;
 }
 
+fn box_sd(pixel: vec2<f32>, rect: vec4<f32>, radius: f32) -> f32 {
+    let half = rect.zw * 0.5;
+    return rounded_box(pixel - (rect.xy + half), half, radius);
+}
+
+fn tri_sd(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> f32 {
+    let e0 = b - a;
+    let e1 = c - b;
+    let e2 = a - c;
+    let v0 = p - a;
+    let v1 = p - b;
+    let v2 = p - c;
+    let q0 = v0 - e0 * clamp(dot(v0, e0) / dot(e0, e0), 0.0, 1.0);
+    let q1 = v1 - e1 * clamp(dot(v1, e1) / dot(e1, e1), 0.0, 1.0);
+    let q2 = v2 - e2 * clamp(dot(v2, e2) / dot(e2, e2), 0.0, 1.0);
+    let s = sign(e0.x * e2.y - e0.y * e2.x);
+    let d = min(
+        min(vec2<f32>(dot(q0, q0), s * (v0.x * e0.y - v0.y * e0.x)), vec2<f32>(dot(q1, q1), s * (v1.x * e1.y - v1.y * e1.x))),
+        vec2<f32>(dot(q2, q2), s * (v2.x * e2.y - v2.y * e2.x)),
+    );
+    return -sqrt(d.x) * sign(d.y);
+}
+
+// Crown.dc.html's 14px glyphs, drawn in their own 24-unit viewBox; returns pixels.
+fn glyph_sd(pixel: vec2<f32>, centre: vec2<f32>, which: i32) -> f32 {
+    let scale = 14.0 / 24.0;
+    let q = (pixel - centre) / scale + vec2<f32>(12.0);
+    var d = 1e4;
+    if (which == 0) {
+        d = min(rounded_box(q - vec2<f32>(8.0, 12.0), vec2<f32>(2.0, 7.0), 1.0),
+                rounded_box(q - vec2<f32>(16.0, 12.0), vec2<f32>(2.0, 7.0), 1.0));
+    } else if (which == 1) {
+        d = tri_sd(q, vec2<f32>(8.0, 5.0), vec2<f32>(8.0, 19.0), vec2<f32>(19.0, 12.0));
+    } else {
+        d = min(tri_sd(q, vec2<f32>(6.0, 5.0), vec2<f32>(15.0, 12.0), vec2<f32>(6.0, 19.0)),
+                rounded_box(q - vec2<f32>(17.25, 12.0), vec2<f32>(1.25, 7.0), 1.0));
+    }
+    return d * scale;
+}
+
+// Album art filling `rect` like `object-fit: cover`, or the empty slot colour without art.
+fn art_at(pixel: vec2<f32>, rect: vec4<f32>) -> vec3<f32> {
+    if (orb.crown_style.y < 0.5) {
+        return orb.deep.rgb;
+    }
+    var uv = (pixel - rect.xy) / max(rect.zw, vec2<f32>(1.0));
+    let aspect = rect.z / max(rect.w, 1.0);
+    if (aspect < 1.0) {
+        uv.x = 0.5 + (uv.x - 0.5) * aspect;
+    } else {
+        uv.y = 0.5 + (uv.y - 0.5) / aspect;
+    }
+    return textureSampleLevel(art_texture, art_sampler, uv, 0.0).rgb;
+}
+
 fn mark_level(k: i32) -> f32 {
     let i = ((k % 12) + 12) % 12;
     return orb.marks[i / 4][i % 4];
@@ -142,8 +216,12 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let orb_hi = orb.rect.xy + orb.rect.zw + vec2<f32>(SHADOW);
     let card_lo = orb.card.xy - vec2<f32>(SHADOW);
     let card_hi = orb.card.xy + orb.card.zw + vec2<f32>(SHADOW);
-    let lo = min(orb_lo, card_lo);
-    let hi = max(orb_hi, card_hi);
+    var lo = min(orb_lo, card_lo);
+    var hi = max(orb_hi, card_hi);
+    if (orb.strip_style.x > 0.001 && orb.strip.z > 0.5) {
+        lo = min(lo, orb.strip.xy - vec2<f32>(48.0));
+        hi = max(hi, orb.strip.xy + orb.strip.zw + vec2<f32>(48.0));
+    }
     let pixel = mix(lo, hi, quad_corner(vertex_index));
 
     var out: VertexOutput;
@@ -200,6 +278,48 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         color = over(color, vec4<f32>(card_rgb, surface * orb.body_color.a));
         let rim = surface * smoothstep(-2.0 * aa_px, 0.0, surface_sd);
         color = over(color, vec4<f32>(mix(vec3<f32>(0.0), vec3<f32>(1.0), edge_up), rim * mix(0.35, 0.12, edge_up)));
+    }
+
+    if (orb.strip_style.x > 0.001 && orb.strip.z > 0.5) {
+        let k = orb.strip_style.x;
+        let radius = orb.strip_style.w;
+        let shape = box_sd(in.pixel, orb.strip, radius);
+        if (orb.strip_style.y > 0.5) {
+            let drop = box_sd(in.pixel - vec2<f32>(0.0, 14.0), orb.strip, radius);
+            let s = 1.0 - smoothstep(-34.0 * 0.4, 34.0, drop);
+            color = over(color, vec4<f32>(vec3<f32>(0.0), s * s * 0.55 * k));
+        }
+        let cover = fill(shape, aa_px);
+        var c = orb.strip_color.rgb;
+        if (orb.strip_style.y > 0.5) {
+            let below = fill(box_sd(in.pixel - vec2<f32>(0.0, 1.0), orb.strip, radius), aa_px);
+            c = mix(c, veil(c, vec3<f32>(1.0), 0.06), cover * (1.0 - below));
+        }
+
+        let art_shape = box_sd(in.pixel, orb.strip_art, 8.0);
+        var art = art_at(in.pixel, orb.strip_art);
+        art = mix(art, veil(art, vec3<f32>(1.0), 0.08), fill(abs(art_shape + 0.5) - 0.5, aa_px));
+        c = mix(c, art, fill(art_shape, aa_px));
+
+        let play_glyph = select(1, 0, orb.strip_style.z > 0.5);
+        let glyphs = min(glyph_sd(in.pixel, orb.glyphs.xy, play_glyph), glyph_sd(in.pixel, orb.glyphs.zw, 2));
+        c = mix(c, orb.ink.rgb, fill(glyphs, aa_px));
+
+        let track = vec4<f32>(orb.line.x, orb.line.y, orb.line.z, 2.0);
+        let played = vec4<f32>(orb.line.x, orb.line.y, orb.line.z * orb.line.w, 2.0);
+        c = mix(c, veil(c, orb.ink.rgb, 0.14), fill(box_sd(in.pixel, track, 0.0), aa_px));
+        c = mix(c, orb.ink.rgb, fill(box_sd(in.pixel, played, 0.0), aa_px));
+
+        color = over(color, vec4<f32>(c, cover * k));
+    }
+
+    if (orb.crown_style.x > 0.001) {
+        let k = orb.crown_style.x;
+        let shape = box_sd(in.pixel, orb.crown, orb.crown_style.z);
+        var c = mix(body, veil(body, vec3<f32>(1.0), 0.12), fill(abs(shape + 0.5) - 0.5, aa_px));
+        let art_shape = box_sd(in.pixel, orb.crown_art, orb.crown_style.w);
+        c = mix(c, art_at(in.pixel, orb.crown_art), fill(art_shape, aa_px));
+        color = over(color, vec4<f32>(c, fill(shape, aa_px) * k * orb.body_color.a));
     }
 
     let fold = orb.agent_a.x;

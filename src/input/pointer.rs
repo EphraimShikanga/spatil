@@ -25,7 +25,9 @@ impl SpatilState {
         let on_orb = self.orb_contains(self.pointer_location)
             || self.card_contains(self.pointer_location)
             || self.banner_contains(self.pointer_location)
+            || self.crown_contains(self.pointer_location)
             || self.orb_dragging();
+        self.crown_hover(self.pointer_location);
         self.set_orb_hover(on_orb);
         self.card_hover(self.pointer_location);
         // Tiles already say what they are; only tray icons need a tooltip.
@@ -98,6 +100,15 @@ impl SpatilState {
             return;
         }
         if button_state == ButtonState::Released && self.end_drag() {
+            return;
+        }
+        if button_state == ButtonState::Pressed
+            && button_code == BTN_LEFT
+            && self.crown_press(self.pointer_location)
+        {
+            return;
+        }
+        if button_state == ButtonState::Released && self.crown_contains(self.pointer_location) {
             return;
         }
         if button_state == ButtonState::Pressed
@@ -204,6 +215,11 @@ impl SpatilState {
 
     pub fn dispatch_pointer_axis(&mut self, frame: AxisFrame) {
         self.note_input();
+        if let Some(steps) = wheel_steps(&frame)
+            && self.crown_scroll(self.pointer_location, steps)
+        {
+            return;
+        }
         if let Some(steps) = wheel_steps(&frame)
             && self.module_scroll(self.pointer_location, -steps.round() as i32)
         {

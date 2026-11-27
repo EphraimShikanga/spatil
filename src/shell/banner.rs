@@ -226,6 +226,10 @@ impl SpatilState {
         }
     }
 
+    pub fn banner_rect(&self) -> Option<[f32; 4]> {
+        self.banner.rect
+    }
+
     pub fn banner_contains(&self, point: Point<f64, Logical>) -> bool {
         self.banner.rect.is_some_and(|rect| inside(rect, point))
     }

@@ -234,6 +234,72 @@ pub fn run(out_dir: &Path) {
     state.last_input = Instant::now();
     agent_states(&mut state, &mut event_loop, &shot);
     gestures(&mut state, &mut event_loop, centre);
+    crown(&mut state, &mut event_loop, &shot);
+}
+
+fn crown(
+    state: &mut SpatilState,
+    event_loop: &mut EventLoop<'static, SpatilState>,
+    shot: &dyn Fn(&mut SpatilState, &str),
+) {
+    use crate::shell::agent::AgentPhase;
+    use crate::shell::mpris::{NowPlaying, Playback, Track};
+    state.agent.set_phase(AgentPhase::Idle);
+    state.dispatch_pointer_motion_absolute(450.0, 120.0);
+    println!("now playing on the session bus: {}", state.crown_report()["now_playing"]);
+    // Crown.dc.html's sample track; its art is the mockup's placeholder colour.
+    let track = |playback| NowPlaying {
+        bus: "snapshot".to_string(),
+        track: Track {
+            title: "Slow Afternoon".to_string(),
+            artist: "Lua Ensemble".to_string(),
+            art_url: String::new(),
+            length_us: 200_000_000,
+        },
+        playback,
+        position_us: 76_000_000,
+        rate: 0.0,
+        at: Instant::now(),
+    };
+    let art = crate::shell::tray::TrayPixmap {
+        width: 64,
+        height: 64,
+        bgra: [0x3D, 0x70, 0xC2, 0xFF].repeat(64 * 64),
+    };
+    // The live session bus keeps reporting real players; hold the sample in place.
+    let playing = move |s: &mut SpatilState, playback| {
+        s.set_now_playing(Some(track(playback)));
+        s.set_crown_art(Some(&art));
+    };
+    let calm = Duration::from_millis(900);
+    let hold = |state: &mut SpatilState, event_loop: &mut EventLoop<'static, SpatilState>, playback| {
+        awake(state, event_loop, calm, |s, _| playing(s, playback));
+    };
+    hold(state, event_loop, Playback::Playing);
+    shot(state, "20-crown");
+
+    if let Some(r) = state.crown_rect() {
+        state.dispatch_pointer_motion_absolute((r[0] + r[2] * 0.5) as f64, (r[1] + r[3] * 0.5) as f64);
+    }
+    hold(state, event_loop, Playback::Playing);
+    shot(state, "21-crown-strip");
+    hold(state, event_loop, Playback::Paused);
+    shot(state, "22-crown-paused");
+
+    state.dispatch_pointer_motion_absolute(450.0, 120.0);
+    let orb = state.orb_rect().expect("orb");
+    let (cx, cy) = (orb.loc.x as f64 + 28.0, orb.loc.y as f64 + 28.0);
+    state.dispatch_pointer_motion_absolute(cx, cy);
+    state.dispatch_pointer_button(BTN_LEFT, ButtonState::Pressed);
+    state.dispatch_pointer_button(BTN_LEFT, ButtonState::Released);
+    hold(state, event_loop, Playback::Playing);
+    if let Some(r) = state.crown_rect() {
+        state.dispatch_pointer_motion_absolute((r[0] + r[2] * 0.5) as f64, (r[1] + r[3] * 0.5) as f64);
+    }
+    hold(state, event_loop, Playback::Playing);
+    shot(state, "23-crown-card");
+    state.close_orb();
+    state.set_now_playing(None);
 }
 
 fn gestures(

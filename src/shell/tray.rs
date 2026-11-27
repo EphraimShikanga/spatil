@@ -319,6 +319,7 @@ impl SpatilState {
         let warn = modules.iter().any(|m| m.urgent && !matches!(m.id, ModuleId::Tray(_)));
         self.draw_card(&modules, open, warn);
         self.draw_banner();
+        self.draw_crown();
     }
 
     pub fn module_at(&self, point: Point<f64, Logical>) -> Option<ModuleId> {

@@ -63,6 +63,7 @@ pub struct OrbPalette {
     pub dark: [f32; 4],
     pub amber: [f32; 4],
     pub quiet: [f32; 4],
+    pub deep: [f32; 4],
 }
 
 impl OrbPalette {
@@ -73,6 +74,7 @@ impl OrbPalette {
             dark: parse_hex_color("#0B0D10"),
             amber: parse_hex_color("#F5A524"),
             quiet: parse_hex_color("#9AA3AF"),
+            deep: parse_hex_color("#0F1216"),
         }
     }
 }
@@ -118,6 +120,7 @@ pub struct OrbFrame {
     /// Dial angle pointing from the orb toward the screen, where the alert pip sits.
     pub facing: f32,
     pub agent: crate::shell::agent::AgentLook,
+    pub crown: crate::shell::crown::CrownLook,
 }
 
 #[repr(C)]
@@ -146,6 +149,16 @@ pub struct OrbUniform {
     pub dark: [f32; 4],
     pub amber: [f32; 4],
     pub quiet: [f32; 4],
+    pub deep: [f32; 4],
+    pub crown: [f32; 4],
+    pub crown_art: [f32; 4],
+    pub crown_style: [f32; 4],
+    pub strip: [f32; 4],
+    pub strip_style: [f32; 4],
+    pub strip_color: [f32; 4],
+    pub strip_art: [f32; 4],
+    pub glyphs: [f32; 4],
+    pub line: [f32; 4],
 }
 
 impl OrbUniform {
@@ -176,6 +189,16 @@ impl OrbUniform {
             dark: palette.dark,
             amber: palette.amber,
             quiet: palette.quiet,
+            deep: palette.deep,
+            crown: frame.crown.crown,
+            crown_art: frame.crown.crown_art,
+            crown_style: frame.crown.crown_style,
+            strip: frame.crown.strip,
+            strip_style: frame.crown.strip_style,
+            strip_color: frame.crown.strip_color,
+            strip_art: frame.crown.strip_art,
+            glyphs: frame.crown.glyphs,
+            line: frame.crown.line,
         }
     }
 }
@@ -184,25 +207,45 @@ pub struct OrbPipeline {
     pub pipeline: wgpu::RenderPipeline,
     pub uniform_buffer: wgpu::Buffer,
     pub uniform_bind_group: wgpu::BindGroup,
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
 }
 
 impl OrbPipeline {
-    pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, surface_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::include_wgsl!("../shaders/orb.wgsl"));
 
         let uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("orb uniform bind group layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
             });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -249,15 +292,74 @@ impl OrbPipeline {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("orb uniform bind group"),
-            layout: &uniform_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("orb art sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
         });
+        let blank = art_texture(device, queue, 1, 1, &[0, 0, 0, 0]);
+        let uniform_bind_group =
+            bind_group(device, &uniform_bind_group_layout, &uniform_buffer, &blank, &sampler);
 
-        Self { pipeline, uniform_buffer, uniform_bind_group }
+        Self {
+            pipeline,
+            uniform_buffer,
+            uniform_bind_group,
+            layout: uniform_bind_group_layout,
+            sampler,
+        }
     }
+
+    /// Replaces the album art the crown and strip sample; `None` leaves an empty slot.
+    pub fn set_art(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, art: Option<(u32, u32, &[u8])>) {
+        let texture = match art {
+            Some((w, h, bgra)) if w > 0 && h > 0 && bgra.len() >= (w * h * 4) as usize => {
+                art_texture(device, queue, w, h, bgra)
+            }
+            _ => art_texture(device, queue, 1, 1, &[0, 0, 0, 0]),
+        };
+        self.uniform_bind_group =
+            bind_group(device, &self.layout, &self.uniform_buffer, &texture, &self.sampler);
+    }
+}
+
+fn art_texture(device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32, bgra: &[u8]) -> wgpu::Texture {
+    let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("orb art"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bgra8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        texture.as_image_copy(),
+        &bgra[..(width * height * 4) as usize],
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(height) },
+        size,
+    );
+    texture
+}
+
+fn bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform: &wgpu::Buffer,
+    art: &wgpu::Texture,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    let view = art.create_view(&wgpu::TextureViewDescriptor::default());
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("orb bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    })
 }

@@ -439,6 +439,8 @@ impl SpatilState {
         let Some(frame) = self.wgpu_state.orb_frame.as_ref() else {
             return;
         };
+        // A drawn-out crown strip lies over the time for as long as it is hovered.
+        let alpha = alpha * (1.0 - self.crown_covers_time());
         let secs = frame.seconds_of_day as u32;
         let time = format!("{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60);
         let (time_size, date_size) = (30.0, 12.5);

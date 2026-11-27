@@ -252,7 +252,7 @@ impl WgpuState {
         let particle_pipeline = ParticlePipeline::new(&device, format);
         let backdrop_pipeline = BackdropPipeline::new(&device, format);
         let hud_pipeline = HudPipeline::new(&device, format, &quad_pipeline.bind_group_layout);
-        let orb_pipeline = OrbPipeline::new(&device, format);
+        let orb_pipeline = OrbPipeline::new(&device, &queue, format);
         let cursor_pipeline = CursorPipeline::new(&device, format);
         let text_pipeline = TextPipeline::new(&device, format);
         let panel_pipeline = PanelPipeline::new(&device, format);
@@ -527,6 +527,11 @@ impl WgpuState {
             true,
         );
         self.tray_icons.insert(key, quad);
+    }
+
+    pub fn set_orb_art(&mut self, art: Option<&crate::shell::tray::TrayPixmap>) {
+        let art = art.map(|a| (a.width, a.height, a.bgra.as_slice()));
+        self.orb_pipeline.set_art(&self.device, &self.queue, art);
     }
 
     pub fn remove_tray_icon(&mut self, key: &str) {

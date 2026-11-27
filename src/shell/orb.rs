@@ -15,6 +15,13 @@ pub struct Eased {
     velocity: f32,
 }
 
+impl OrbRuntime {
+    /// The card's eased openness.
+    pub fn open_value(&self) -> f32 {
+        self.open.value
+    }
+}
+
 impl Eased {
     pub fn snap(&mut self, value: f32) {
         self.value = value;
@@ -240,6 +247,7 @@ impl SpatilState {
         self.orb.ambient.tick(ambient_target, stiffness, damping, dt);
         let look = self.agent.tick(dt_ms, stiffness, damping);
         self.tick_banner(dt_ms);
+        self.tick_crown(dt_ms);
 
         self.advance_holds();
         self.settle_orb(dt);
@@ -286,6 +294,7 @@ impl SpatilState {
             warn: 0.0,
             facing: self.orb_corner().facing(),
             agent: look,
+            crown: Default::default(),
         });
 
         self.cursor_hidden = flight.hide_real_cursor;
@@ -504,6 +513,7 @@ impl SpatilState {
             "seconds_of_day": seconds_of_day(),
             "agent": self.agent.report(),
             "banner": self.banner_report(),
+            "crown": self.crown_report(),
         })
     }
 

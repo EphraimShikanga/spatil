@@ -17,6 +17,7 @@ use crate::renderer::WgpuState;
 use crate::shell::agent::AgentRuntime;
 use crate::shell::banner::BannerRuntime;
 use crate::shell::card::CardRuntime;
+use crate::shell::crown::CrownRuntime;
 use crate::shell::orb::OrbRuntime;
 use crate::shell::menu::MenuRuntime;
 use crate::shell::tooltip::TooltipRuntime;
@@ -140,6 +141,7 @@ pub struct SpatilState {
     pub orb: OrbRuntime,
     pub agent: AgentRuntime,
     pub banner: BannerRuntime,
+    pub crown: CrownRuntime,
     pub card: CardRuntime,
     pub tray: Tray,
     pub module_slots: Vec<(ModuleId, [f32; 4])>,
@@ -313,6 +315,7 @@ impl SpatilState {
             orb: OrbRuntime::default(),
             agent: AgentRuntime::default(),
             banner: BannerRuntime::default(),
+            crown: CrownRuntime::default(),
             card: CardRuntime::default(),
             tray: Tray::default(),
             module_slots: Vec::new(),
@@ -335,6 +338,8 @@ impl SpatilState {
         init_power(&state.loop_handle);
         init_bluetooth(&state.loop_handle);
         init_audio(&state.loop_handle);
+        let mpris = crate::shell::mpris::init_mpris(&state.loop_handle);
+        state.attach_mpris(mpris);
         state
     }
 
