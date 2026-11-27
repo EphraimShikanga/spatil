@@ -4,6 +4,7 @@ pub mod banner;
 pub mod bluetooth;
 pub mod card;
 pub mod crown;
+pub mod icons;
 pub mod launch;
 pub mod menu;
 pub mod module;

@@ -24,9 +24,9 @@ const TILE_RADIUS: f32 = 14.0;
 const CHIP: f32 = 30.0;
 /// Space between an icon chip and the level ring around it.
 const RING_GAP: f32 = 4.0;
-const TILE_ICON: f32 = 18.0;
+const TILE_ICON: f32 = crate::shell::icons::TILE_SIZE;
 const DEST_H: f32 = 62.0;
-const DEST_ICON: f32 = 20.0;
+const DEST_ICON: f32 = crate::shell::icons::DEST_SIZE;
 const TRAY_ICON: f32 = 20.0;
 const TRAY_PITCH: f32 = 32.0;
 const TRAY_LABEL_H: f32 = 16.0;
@@ -66,16 +66,13 @@ impl Destination {
         }
     }
 
-    fn icon_names(self) -> &'static [&'static str] {
+    fn icon(self) -> &'static str {
+        use crate::shell::icons;
         match self {
-            Self::Alerts => &[
-                "preferences-system-notifications-symbolic",
-                "notifications-symbolic",
-                "notification-symbolic",
-            ],
-            Self::Calendar => &["x-office-calendar-symbolic", "office-calendar-symbolic"],
-            Self::Windows => &["view-grid-symbolic", "view-app-grid-symbolic", "window-new-symbolic"],
-            Self::Map => &["find-location-symbolic", "mark-location-symbolic", "map-symbolic"],
+            Self::Alerts => icons::ALERTS,
+            Self::Calendar => icons::CALENDAR,
+            Self::Windows => icons::WINDOWS,
+            Self::Map => icons::MAP,
         }
     }
 
@@ -257,7 +254,7 @@ impl Palette {
             secondary: parse_hex_color("#9AA3AF"),
             tile: lighten(body, 0.05),
             tile_hover: lighten(body, 0.1),
-            chip_off: lighten(body, 0.14),
+            chip_off: parse_hex_color("#2B3037"),
             accent,
             amber: parse_hex_color("#F5A524"),
         }
@@ -311,13 +308,11 @@ impl SpatilState {
             return;
         }
         self.card.icons_resolved = true;
-        for dest in Destination::ALL {
-            let icon = dest.icon_names().iter().find_map(|name| crate::shell::icon_source(name));
-            match icon {
-                Some(icon) => {
-                    self.wgpu_state.upload_tray_icon(dest.key(), icon.width, icon.height, &icon.bgra)
-                }
-                None => tracing::debug!("no icon found for the {} destination", dest.label()),
+        let tiles = STATUS.iter().map(|id| (tile_icon_key(id), tile_icon(id)));
+        let dests = Destination::ALL.into_iter().map(|d| (d.key(), d.icon()));
+        for (key, svg) in dests.chain(tiles) {
+            if let Some(icon) = crate::shell::icons::rasterize(svg, 1.0) {
+                self.wgpu_state.upload_tray_icon(key, icon.width, icon.height, &icon.bgra);
             }
         }
     }
@@ -355,6 +350,8 @@ impl SpatilState {
             frame.card = morph;
             frame.card_radius = lerp(orb[2] * 0.5, RADIUS, t);
             frame.blend = 96.0 * t * (1.0 - t);
+            // `box-shadow: 0 24px 60px rgba(0,0,0,0.6)`
+            frame.shadow = [0.6 * t, 24.0, 60.0];
         }
         self.card.rect = Some(morph);
 
@@ -490,6 +487,21 @@ impl SpatilState {
     }
 }
 
+/// Tiles wear the design's icon for their service, not the theme's icon for its state.
+fn tile_icon(id: &ModuleId) -> &'static str {
+    use crate::shell::icons;
+    match id {
+        ModuleId::Network => icons::WIFI,
+        ModuleId::Bluetooth => icons::BLUETOOTH,
+        ModuleId::Audio => icons::SOUND,
+        ModuleId::Battery | ModuleId::Tray(_) => icons::BATTERY,
+    }
+}
+
+fn tile_icon_key(id: &ModuleId) -> String {
+    format!("dest:tile:{}", id.key())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_tile(
     id: &ModuleId,
@@ -509,13 +521,14 @@ fn draw_tile(
     let chip = [rect[0] + 14.0, rect[1] + (rect[3] - CHIP) * 0.5, CHIP, CHIP];
     let chip_color = match module {
         Some(m) if m.urgent => palette.amber,
-        Some(m) if m.active => palette.accent,
+        // Main.dc.html: Battery is a reading, not a toggle, so its chip never lights.
+        Some(m) if m.active && *id != ModuleId::Battery => palette.accent,
         _ => palette.chip_off,
     };
     panels.push(PanelInstance::fill(chip, CHIP * 0.5, with_alpha(chip_color, alpha)));
-    if module.is_some_and(|m| m.drawable()) {
+    if module.is_some() {
         icons.push(TrayQuad {
-            key: id.key(),
+            key: tile_icon_key(id),
             rect: [
                 chip[0] + (CHIP - TILE_ICON) * 0.5,
                 chip[1] + (CHIP - TILE_ICON) * 0.5,
